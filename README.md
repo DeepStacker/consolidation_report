@@ -21,6 +21,6 @@ To run both the React frontend and the FastAPI backend locally:
 This repository is configured to be hosted for free on **Hugging Face Spaces** using Docker:
 * Exposes Port: `7860`
 * SDK: `docker` (Blank template)
-* Build Configuration: Defined in the [Dockerfile](file:///Users/deepstacker/Downloads/consolidation_report/Dockerfile).
+* Build Configuration: Defined in the [Dockerfile](Dockerfile).
 
 Check out the configuration reference at https://huggingface.co/docs/hub/spaces-config-reference
