@@ -1,302 +1,466 @@
-client_id: "axis_poa"
-client_display_name: "Axis Bank POA"
-filename_pattern: "*Axis Bank POA*"
+client_id: axis_poa
+client_display_name: Axis Bank POA
+filename_pattern: '*Axis Bank POA*'
 active: true
-
 sheets:
-  "Payment Tracker":
+  Payment Tracker:
     header_row: 1
     data_start_row: 2
-    client_column: "client"
-    s_no_column: "S.no"
-    sum_columns: ["Total pay (Base)", "Total pay"]
+    client_column: client
+    s_no_column: S.no
+    sum_columns:
+    - Total pay (Base)
+    - Total pay
     columns:
-      - canonical_name: "S.no"
-        synonyms: ["S.no", "S.No", "S.No."]
-        datatype: "integer"
-        mandatory: true
-      - canonical_name: "client"
-        synonyms: ["client", "Client"]
-        datatype: "string"
-        default_value: "Axis Bank POA"
-        mandatory: false
-      - canonical_name: "Assayer Name"
-        synonyms: ["Assayer Name"]
-        datatype: "string"
-        mandatory: true
-      - canonical_name: "Assayer Code"
-        synonyms: ["Assayer Code"]
-        datatype: "string"
-        validation_regex: "^AS[0-9]{4}$|^AD[0-9]{4}$"
-        mandatory: true
-      - canonical_name: "Assayer Phone"
-        synonyms: ["Assayer Phone"]
-        datatype: "string"
-        mandatory: false
-      - canonical_name: "Location"
-        synonyms: ["Location"]
-        datatype: "string"
-        mandatory: false
-      - canonical_name: "State"
-        synonyms: ["State"]
-        datatype: "string"
-        mandatory: false
-      - canonical_name: "Zone"
-        synonyms: ["Zone"]
-        datatype: "string"
-        mandatory: false
-      - canonical_name: "Audit Month & Year"
-        synonyms: ["Audit Month & Year"]
-        datatype: "string"
-        mandatory: false
-      - canonical_name: "Type of Audit"
-        synonyms: ["Type of Audit"]
-        datatype: "string"
-        mandatory: false
-      - canonical_name: "No. of Visits"
-        synonyms: ["No. of Visits", "No of visits"]
-        datatype: "integer"
-        default_value: 0
-        mandatory: true
-      - canonical_name: "Base Audit Fee"
-        synonyms: ["Base Audit Fee"]
-        datatype: "decimal"
-        default_value: 0.0
-        mandatory: true
-      - canonical_name: "Total pay (Base)"
-        synonyms: ["Total pay (Base)"]
-        datatype: "decimal"
-        default_value: 0.0
-        mandatory: true
-      - canonical_name: " Travel charges(If any)"
-        synonyms: [" Travel charges(If any)", "Travel charges(If any)", "Travel charges"]
-        datatype: "decimal"
-        default_value: 0.0
-        mandatory: false
-      - canonical_name: "Cancelled visits"
-        synonyms: ["Cancelled visits"]
-        datatype: "integer"
-        default_value: 0
-        mandatory: false
-      - canonical_name: "Branch Cancellation Charges"
-        synonyms: ["Branch Cancellation Charges"]
-        datatype: "decimal"
-        default_value: 0.0
-        mandatory: false
-      - canonical_name: " Andaman & Nicobar Branch Expenses"
-        synonyms: [" Andaman & Nicobar Branch Expenses", "Andaman & Nicobar Branch Expenses"]
-        datatype: "decimal"
-        default_value: 0.0
-        mandatory: false
-      - canonical_name: "Error Deduction"
-        synonyms: ["Error Deduction"]
-        datatype: "decimal"
-        default_value: 0.0
-        mandatory: false
-      - canonical_name: "Total pay"
-        synonyms: ["Total pay"]
-        datatype: "decimal"
-        default_value: 0.0
-        mandatory: true
-      - canonical_name: "Remarks (if any)"
-        synonyms: ["Remarks (if any)", "Remarks"]
-        datatype: "string"
-        mandatory: false
-      - canonical_name: "PAN Number"
-        synonyms: ["PAN Number", "PAN"]
-        datatype: "string"
-        validation_regex: "^[A-Z]{5}[0-9]{4}[A-Z]{1}$"
-        mandatory: false
-      - canonical_name: "Bank Name"
-        synonyms: ["Bank Name"]
-        datatype: "string"
-        mandatory: false
-      - canonical_name: "A/c Number"
-        synonyms: ["A/c Number", "Account Number"]
-        datatype: "string"
-        mandatory: false
-      - canonical_name: "IFSC Code"
-        synonyms: ["IFSC Code", "IFSC"]
-        datatype: "string"
-        validation_regex: "^[A-Z]{4}0[A-Z0-9]{6}$"
-        validation_exceptions: ["0", "N.A", "SBIN002105", "IB000T100"]
-        mandatory: false
-
-  "Master Data":
+    - canonical_name: S.no
+      synonyms:
+      - S.no
+      - S.No
+      - S.No.
+      datatype: integer
+      mandatory: true
+    - canonical_name: client
+      synonyms:
+      - client
+      - Client
+      datatype: string
+      default_value: Axis Bank POA
+      mandatory: false
+    - canonical_name: Assayer Name
+      synonyms:
+      - Assayer Name
+      datatype: string
+      mandatory: true
+    - canonical_name: Assayer Code
+      synonyms:
+      - Assayer Code
+      datatype: string
+      validation_regex: ^AS[0-9]{4}$|^AD[0-9]{4}$
+      mandatory: true
+    - canonical_name: Assayer Phone
+      synonyms:
+      - Assayer Phone
+      datatype: string
+      mandatory: false
+    - canonical_name: Location
+      synonyms:
+      - Location
+      datatype: string
+      mandatory: false
+    - canonical_name: State
+      synonyms:
+      - State
+      datatype: string
+      mandatory: false
+    - canonical_name: Zone
+      synonyms:
+      - Zone
+      datatype: string
+      mandatory: false
+    - canonical_name: Audit Month & Year
+      synonyms:
+      - Audit Month & Year
+      datatype: string
+      mandatory: false
+    - canonical_name: Type of Audit
+      synonyms:
+      - Type of Audit
+      datatype: string
+      mandatory: false
+    - canonical_name: No. of Visits
+      synonyms:
+      - No. of Visits
+      - No of visits
+      datatype: integer
+      default_value: 0
+      mandatory: true
+    - canonical_name: Base Audit Fee
+      synonyms:
+      - Base Audit Fee
+      datatype: decimal
+      default_value: 0.0
+      mandatory: true
+    - canonical_name: Total pay (Base)
+      synonyms:
+      - Total pay (Base)
+      datatype: decimal
+      default_value: 0.0
+      mandatory: true
+    - canonical_name: ' Travel charges(If any)'
+      synonyms:
+      - ' Travel charges(If any)'
+      - Travel charges(If any)
+      - Travel charges
+      datatype: decimal
+      default_value: 0.0
+      mandatory: false
+    - canonical_name: Cancelled visits
+      synonyms:
+      - Cancelled visits
+      datatype: integer
+      default_value: 0
+      mandatory: false
+    - canonical_name: Branch Cancellation Charges
+      synonyms:
+      - Branch Cancellation Charges
+      datatype: decimal
+      default_value: 0.0
+      mandatory: false
+    - canonical_name: ' Andaman & Nicobar Branch Expenses'
+      synonyms:
+      - ' Andaman & Nicobar Branch Expenses'
+      - Andaman & Nicobar Branch Expenses
+      datatype: decimal
+      default_value: 0.0
+      mandatory: false
+    - canonical_name: Error Deduction
+      synonyms:
+      - Error Deduction
+      datatype: decimal
+      default_value: 0.0
+      mandatory: false
+    - canonical_name: Total pay
+      synonyms:
+      - Total pay
+      datatype: decimal
+      default_value: 0.0
+      mandatory: true
+    - canonical_name: Remarks (if any)
+      synonyms:
+      - Remarks (if any)
+      - Remarks
+      datatype: string
+      mandatory: false
+    - canonical_name: PAN Number
+      synonyms:
+      - PAN Number
+      - PAN
+      datatype: string
+      validation_regex: ^[A-Z]{5}[0-9]{4}[A-Z]{1}$
+      mandatory: false
+    - canonical_name: Bank Name
+      synonyms:
+      - Bank Name
+      datatype: string
+      mandatory: false
+    - canonical_name: A/c Number
+      synonyms:
+      - A/c Number
+      - Account Number
+      datatype: string
+      mandatory: false
+    - canonical_name: IFSC Code
+      synonyms:
+      - IFSC Code
+      - IFSC
+      datatype: string
+      validation_regex: ^[A-Z]{4}0[A-Z0-9]{6}$
+      validation_exceptions:
+      - '0'
+      - N.A
+      - SBIN002105
+      - IB000T100
+      mandatory: false
+  Master Data:
     header_row: 1
     data_start_row: 2
-    client_column: "Client"
-    s_no_column: "Sr No"
-    hidden_columns: [10, 11, 12, 13, 14, 15]
+    client_column: Client
+    s_no_column: Sr No
+    hidden_columns:
+    - 10
+    - 11
+    - 12
+    - 13
+    - 14
+    - 15
     columns:
-      - canonical_name: "Sr No"
-        synonyms: ["Sr No", "Sr No."]
-        datatype: "integer"
-        mandatory: true
-      - canonical_name: "Client"
-        synonyms: ["Client"]
-        datatype: "string"
-        default_value: "Axis Bank POA"
-        mandatory: false
-      - canonical_name: "Month"
-        synonyms: ["Month"]
-        datatype: "string"
-        mandatory: false
-      - canonical_name: "Zone"
-        synonyms: ["Zone"]
-        datatype: "string"
-        mandatory: false
-      - canonical_name: "SOL ID"
-        synonyms: ["SOL ID", "Branch Code"]
-        datatype: "string"
-        mandatory: true
-      - canonical_name: "BRANCH"
-        synonyms: ["BRANCH", "BranchName", "Branch Name"]
-        datatype: "string"
-        mandatory: true
-      - canonical_name: "Location "
-        synonyms: ["Location ", "Location"]
-        datatype: "string"
-        mandatory: false
-        copy_from_column: "State"  # HR-002: Location is seeded from State for Axis
-      - canonical_name: "State"
-        synonyms: ["State"]
-        datatype: "string"
-        mandatory: false
-      - canonical_name: "Total No.of A/cs"
-        synonyms: ["Total No.of A/cs", "Total No. of A/cs"]
-        datatype: "integer"
-        default_value: 0
-        mandatory: false
-      - canonical_name: "Assayer Name"
-        synonyms: ["Assayer Name"]
-        datatype: "string"
-        mandatory: true
-      - canonical_name: "Assayer Code"
-        synonyms: ["Assayer Code"]
-        datatype: "string"
-        validation_regex: "^AS[0-9]{4}$|^AD[0-9]{4}$"
-        mandatory: true
-      - canonical_name: "AssayerPhone"
-        synonyms: ["AssayerPhone", "Assayer Phone"]
-        datatype: "string"
-        mandatory: false
-      - canonical_name: "Assayer PAN"
-        synonyms: ["Assayer PAN"]
-        datatype: "string"
-        validation_regex: "^[A-Z]{5}[0-9]{4}[A-Z]{1}$"
-        mandatory: false
-      - canonical_name: "Contact Person"
-        synonyms: ["Contact Person", "Process Manager"]
-        datatype: "string"
-        mandatory: false
-      - canonical_name: "Schedule date"
-        synonyms: ["Schedule date", "Audit schedule date"]
-        datatype: "date"
-        mandatory: false
-      - canonical_name: "Audit \nStatus"
-        synonyms: ["Audit \nStatus", "Audit Status"]
-        datatype: "string"
-        mandatory: false
-      - canonical_name: "Audit \ncompletion date"
-        synonyms: ["Audit \ncompletion date", "Audit completion date", "End Date"]
-        datatype: "date"
-        mandatory: false
-      - canonical_name: "No of days \naudited "
-        synonyms: ["No of days \naudited ", "No of days audited", "No. of Visit", "No of days \naudited"]
-        datatype: "integer"
-        default_value: 0
-        mandatory: false
-      - canonical_name: "No of days \naudited For client"
-        synonyms: ["No of days \naudited For client", "No of days audited For client", "No. of Visit"]
-        datatype: "integer"
-        default_value: 0
-        mandatory: false
-      - canonical_name: "No of Packets \naudited"
-        synonyms: ["No of Packets \naudited", "No of Packets audited"]
-        datatype: "integer"
-        default_value: 0
-        mandatory: false
-      - canonical_name: "Additional Packet"
-        synonyms: ["Additional Packet"]
-        datatype: "integer"
-        default_value: 0
-        mandatory: false
-      - canonical_name: "Assayer Reporting time at Branch"
-        synonyms: ["Assayer Reporting time at Branch"]
-        datatype: "time"
-        mandatory: false
-      - canonical_name: "Audit start time"
-        synonyms: ["Audit start time"]
-        datatype: "time"
-        mandatory: false
-      - canonical_name: "Audit End Time"
-        synonyms: ["Audit End Time"]
-        datatype: "time"
-        mandatory: false
-      - canonical_name: "Client fee"
-        synonyms: ["Client fee", "Client Fees"]
-        datatype: "decimal"
-        default_value: 0.0
-        mandatory: false
-      - canonical_name: "Additional"
-        synonyms: ["Additional"]
-        datatype: "decimal"
-        default_value: 0.0
-        mandatory: false
-      - canonical_name: "Final Client Fees"
-        synonyms: ["Final Client Fees"]
-        datatype: "decimal"
-        default_value: 0.0
-        mandatory: false
-      - canonical_name: "Assayer fee"
-        synonyms: ["Assayer fee", "Assayer Fees"]
-        datatype: "decimal"
-        default_value: 0.0
-        mandatory: false
-      - canonical_name: "Additional fee"
-        synonyms: ["Additional fee", "Additional Fees"]
-        datatype: "decimal"
-        default_value: 0.0
-        mandatory: false
-      - canonical_name: "Distance"
-        synonyms: ["Distance"]
-        datatype: "string"
-        mandatory: false
-      - canonical_name: "Base Location"
-        synonyms: ["Base Location", "Assayer Base location"]
-        datatype: "string"
-        mandatory: false
-      - canonical_name: "Remarks"
-        synonyms: ["Remarks"]
-        datatype: "string"
-        mandatory: false
-      - canonical_name: "Assayer fee.1"
-        synonyms: ["Assayer fee.1", "Assayer Fees.1"]
-        datatype: "decimal"
-        default_value: 0.0
-        mandatory: false
-      - canonical_name: "Additional fee.1"
-        synonyms: ["Additional fee.1", "Additional Fees.1"]
-        datatype: "decimal"
-        default_value: 0.0
-        mandatory: false
-      - canonical_name: "Cancelled"
-        synonyms: ["Cancelled", "Cancellation"]
-        datatype: "decimal"
-        default_value: 0.0
-        mandatory: false
-      - canonical_name: "Error Deduciton"
-        synonyms: ["Error Deduciton", "Error Deduction"]
-        datatype: "decimal"
-        default_value: 0.0
-        mandatory: false
-      - canonical_name: "Total"
-        synonyms: ["Total"]
-        datatype: "decimal"
-        default_value: 0.0
-        mandatory: false
-      - canonical_name: "Audit Remarks"
-        synonyms: ["Audit Remarks", "Other Remarks"]
-        datatype: "string"
-        mandatory: false
+    - canonical_name: Sr No
+      synonyms:
+      - Sr No
+      - Sr No.
+      datatype: integer
+      mandatory: true
+    - canonical_name: Client
+      synonyms:
+      - Client
+      datatype: string
+      default_value: Axis Bank POA
+      mandatory: false
+    - canonical_name: Month
+      synonyms:
+      - Month
+      datatype: string
+      mandatory: false
+    - canonical_name: Zone
+      synonyms:
+      - Zone
+      datatype: string
+      mandatory: false
+    - canonical_name: SOL ID
+      synonyms:
+      - SOL ID
+      - Branch Code
+      datatype: string
+      mandatory: true
+    - canonical_name: BRANCH
+      synonyms:
+      - BRANCH
+      - BranchName
+      - Branch Name
+      datatype: string
+      mandatory: true
+    - canonical_name: 'Location '
+      synonyms:
+      - 'Location '
+      - Location
+      datatype: string
+      mandatory: false
+      copy_from_column: State
+    - canonical_name: State
+      synonyms:
+      - State
+      datatype: string
+      mandatory: false
+    - canonical_name: Total No.of A/cs
+      synonyms:
+      - Total No.of A/cs
+      - Total No. of A/cs
+      datatype: integer
+      default_value: 0
+      mandatory: false
+    - canonical_name: Assayer Name
+      synonyms:
+      - Assayer Name
+      datatype: string
+      mandatory: true
+    - canonical_name: Assayer Code
+      synonyms:
+      - Assayer Code
+      datatype: string
+      validation_regex: ^AS[0-9]{4}$|^AD[0-9]{4}$
+      mandatory: true
+    - canonical_name: AssayerPhone
+      synonyms:
+      - AssayerPhone
+      - Assayer Phone
+      datatype: string
+      mandatory: false
+    - canonical_name: Assayer PAN
+      synonyms:
+      - Assayer PAN
+      datatype: string
+      validation_regex: ^[A-Z]{5}[0-9]{4}[A-Z]{1}$
+      mandatory: false
+    - canonical_name: Contact Person
+      synonyms:
+      - Contact Person
+      - Process Manager
+      datatype: string
+      mandatory: false
+    - canonical_name: Schedule date
+      synonyms:
+      - Schedule date
+      - Audit schedule date
+      datatype: date
+      mandatory: false
+    - canonical_name: "Audit \nStatus"
+      synonyms:
+      - "Audit \nStatus"
+      - Audit Status
+      datatype: string
+      mandatory: false
+    - canonical_name: "Audit \ncompletion date"
+      synonyms:
+      - "Audit \ncompletion date"
+      - Audit completion date
+      - End Date
+      datatype: date
+      mandatory: false
+    - canonical_name: "No of days \naudited "
+      synonyms:
+      - "No of days \naudited "
+      - No of days audited
+      - No. of Visit
+      - "No of days \naudited"
+      datatype: integer
+      default_value: 0
+      mandatory: false
+    - canonical_name: "No of days \naudited For client"
+      synonyms:
+      - "No of days \naudited For client"
+      - No of days audited For client
+      - No. of Visit
+      datatype: integer
+      default_value: 0
+      mandatory: false
+    - canonical_name: "No of Packets \naudited"
+      synonyms:
+      - "No of Packets \naudited"
+      - No of Packets audited
+      datatype: integer
+      default_value: 0
+      mandatory: false
+    - canonical_name: Additional Packet
+      synonyms:
+      - Additional Packet
+      datatype: integer
+      default_value: 0
+      mandatory: false
+    - canonical_name: Assayer Reporting time at Branch
+      synonyms:
+      - Assayer Reporting time at Branch
+      datatype: time
+      mandatory: false
+    - canonical_name: Audit start time
+      synonyms:
+      - Audit start time
+      datatype: time
+      mandatory: false
+    - canonical_name: Audit End Time
+      synonyms:
+      - Audit End Time
+      datatype: time
+      mandatory: false
+    - canonical_name: Client fee
+      synonyms:
+      - Client fee
+      - Client Fees
+      datatype: decimal
+      default_value: 0.0
+      mandatory: false
+    - canonical_name: Additional
+      synonyms:
+      - Additional
+      datatype: decimal
+      default_value: 0.0
+      mandatory: false
+    - canonical_name: Final Client Fees
+      synonyms:
+      - Final Client Fees
+      datatype: decimal
+      default_value: 0.0
+      mandatory: false
+    - canonical_name: Assayer fee
+      synonyms:
+      - Assayer fee
+      - Assayer Fees
+      datatype: decimal
+      default_value: 0.0
+      mandatory: false
+    - canonical_name: Additional fee
+      synonyms:
+      - Additional fee
+      - Additional Fees
+      datatype: decimal
+      default_value: 0.0
+      mandatory: false
+    - canonical_name: Distance
+      synonyms:
+      - Distance
+      datatype: string
+      mandatory: false
+    - canonical_name: Base Location
+      synonyms:
+      - Base Location
+      - Assayer Base location
+      datatype: string
+      mandatory: false
+    - canonical_name: Remarks
+      synonyms:
+      - Remarks
+      datatype: string
+      mandatory: false
+    - canonical_name: Assayer fee.1
+      synonyms:
+      - Assayer fee.1
+      - Assayer Fees.1
+      datatype: decimal
+      default_value: 0.0
+      mandatory: false
+    - canonical_name: Additional fee.1
+      synonyms:
+      - Additional fee.1
+      - Additional Fees.1
+      datatype: decimal
+      default_value: 0.0
+      mandatory: false
+    - canonical_name: Cancelled
+      synonyms:
+      - Cancelled
+      - Cancellation
+      datatype: decimal
+      default_value: 0.0
+      mandatory: false
+    - canonical_name: Error Deduciton
+      synonyms:
+      - Error Deduciton
+      - Error Deduction
+      datatype: decimal
+      default_value: 0.0
+      mandatory: false
+    - canonical_name: Total
+      synonyms:
+      - Total
+      datatype: decimal
+      default_value: 0.0
+      mandatory: false
+    - canonical_name: Audit Remarks
+      synonyms:
+      - Audit Remarks
+      - Other Remarks
+      datatype: string
+      mandatory: false
+    - canonical_name: Seeding Status
+      datatype: string
+      mandatory: false
+    - canonical_name: Report
+      datatype: string
+      mandatory: false
+    - canonical_name: 'Actual Audited (except already audited & A/C closed) '
+      datatype: string
+      mandatory: false
+    - canonical_name: Aadhar No
+      datatype: string
+      mandatory: false
+    - canonical_name: "Cancelled\nClient fee"
+      datatype: string
+      mandatory: false
+    - canonical_name: Address
+      datatype: string
+      mandatory: false
+    - canonical_name: Urban/ Rural
+      datatype: string
+      mandatory: false
+    - canonical_name: T & F Client fee
+      datatype: string
+      mandatory: false
+    - canonical_name: POA Client Fees
+      datatype: string
+      mandatory: false
+    - canonical_name: billing  remarks
+      datatype: string
+      mandatory: false
+    - canonical_name: Touch and Feel Audit Packet Count
+      datatype: string
+      mandatory: false
+    - canonical_name: "POA \nPacket count"
+      datatype: string
+      mandatory: false
+    - canonical_name: Additional Packet  T& F
+      datatype: string
+      mandatory: false
+    - canonical_name: Additional Packet  POA
+      datatype: string
+      mandatory: false
+    - canonical_name: oracle_id
+      datatype: string
+      mandatory: false
+    - canonical_name: Remarks.1
+      datatype: string
+      mandatory: false
+    - canonical_name: Type oof Audit
+      datatype: string
+      mandatory: false
+    sum_columns:
+    - Final Client Fees
+    - Total

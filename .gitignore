@@ -15,6 +15,9 @@ run_audit_log_*.json
 # Scratch / experimental
 scratch/
 
+# Build artifacts
+*.spec
+
 # IDE
 .idea/
 .vscode/

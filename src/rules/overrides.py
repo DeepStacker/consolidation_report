@@ -13,8 +13,6 @@ def axis_state_copy_rule(row: Dict[str, Any]) -> Dict[str, Any]:
     if "State" in row:
         val = row.get("State", None)
         row["Location "] = str(val).strip() if val is not None else None
-    row["Assayer fee.1"] = 0.0
-    row["Additional fee.1"] = 0.0
     return row
 
 
@@ -51,8 +49,11 @@ def rbl_md_days_duplication(row: Dict[str, Any]) -> Dict[str, Any]:
     row["Client"] = "RBL(muthoot)"
     row["Seeding Status"] = None
     row["Report"] = None
-    row["Assayer fee.1"] = 0.0
-    row["Additional fee.1"] = 0.0
+    row["Assayer fee.1"] = None
+    row["Additional fee.1"] = None
+    days = row.get("No of days \naudited ")
+    if days is not None and days != 0:
+        row["No of days \naudited For client"] = days
     return row
 
 

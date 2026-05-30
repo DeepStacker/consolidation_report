@@ -40,7 +40,9 @@ class SynonymResolutionEngine:
         self.synonym_map: Dict[str, str] = {}
         for col in columns:
             for syn in col.synonyms:
-                self.synonym_map[syn.lower().strip()] = col.canonical_name
+                key = syn.lower().strip()
+                if key not in self.synonym_map:
+                    self.synonym_map[key] = col.canonical_name
                 
         # Compilation of normalized registry
         self.normalized_canonical_map: Dict[str, str] = {

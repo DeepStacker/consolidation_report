@@ -62,8 +62,6 @@ def write_consolidated_workbook(
         sheet_def = _first_sheet_def(schemas, sheet_name)
         if not sheet_def or not all_columns:
             continue
-
-        all_columns = [c.canonical_name for c in sheet_def.columns]
         s_no_col = sheet_def.s_no_column
         client_col = sheet_def.client_column
         sum_cols = sheet_def.sum_columns
@@ -79,7 +77,11 @@ def write_consolidated_workbook(
         ws.row_dimensions[1].height = 28 if sheet_name == "Payment Tracker" else 32
 
         current_row = 2
-        for _, row_data in df.iterrows():
+        for seq, (_, row_data) in enumerate(df.iterrows(), 1):
+            # Renumber s_no_column sequentially
+            if s_no_col and s_no_col in all_columns:
+                row_data = row_data.copy()
+                row_data[s_no_col] = seq
             for c_idx, col_name in enumerate(all_columns, 1):
                 val = row_data.get(col_name, None)
                 if isinstance(val, (datetime, date)) and not pd.isna(val):
@@ -102,6 +104,7 @@ def write_consolidated_workbook(
 
         if sum_cols:
             total_row = data_end_row + 2
+            sum_end_row = data_end_row + 1
             cell_tot_lbl = ws.cell(row=total_row, column=1, value="Total")
             format_cell(cell_tot_lbl, bold=True, alignment=Alignment(horizontal="center"))
 
@@ -111,7 +114,7 @@ def write_consolidated_workbook(
                     col_letter = get_column_letter(col_idx)
                     cell = ws.cell(
                         row=total_row, column=col_idx,
-                        value=f"=SUM({col_letter}2:{col_letter}{data_end_row})"
+                        value=f"=SUM({col_letter}2:{col_letter}{sum_end_row})"
                     )
                     format_cell(cell, bold=True, number_format="#,##0.00", alignment=Alignment(horizontal="right"))
 

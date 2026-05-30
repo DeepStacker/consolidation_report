@@ -28,6 +28,7 @@ def discover_clients(config_dir: str) -> List[Tuple[str, SchemaDefinition]]:
                     schemas.append((path, schema))
             except Exception as e:
                 print(f"  [Warning] Skipping schema {f}: {e}")
+    schemas.sort(key=lambda s: s[1].client_id)
     return schemas
 
 
@@ -43,7 +44,9 @@ def find_client_file(workspace_path: str, schema: SchemaDefinition) -> str:
         ]
     if not matches:
         raise FileNotFoundError(
-            f"No file matching pattern '{schema.filename_pattern}' for client '{schema.client_id}'"
+            f"Could not find the workbook for '{schema.client_display_name}'.\n"
+            f"Expected a filename matching: {schema.filename_pattern}\n"
+            f"Make sure the file is in the same folder as this program."
         )
     # Prefer files that don't have " 2" suffix
     best = matches[0]
