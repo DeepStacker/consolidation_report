@@ -3,10 +3,11 @@ import shutil
 import tempfile
 import uuid
 import sys
+import io
 from io import StringIO
 from typing import List, Dict, Any
 from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from src.main import execute_e2e_consolidation
@@ -26,10 +27,10 @@ base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 frontend_dist = os.path.join(base_dir, "frontend", "dist")
 
 
-# In-memory storage for temporary generated files (keyed by session UUID)
-# In production, this would use a cleaner temp directory structure
-GENERATED_FILES: Dict[str, str] = {}
-AUDIT_LOGS: Dict[str, Dict[str, Any]] = {}
+# In-memory byte store for output files (keyed by session UUID)
+# File bytes are held in RAM only and deleted immediately after download.
+# No data is written to persistent disk outside the ephemeral workspace.
+FILE_STORE: Dict[str, bytes] = {}
 
 class LogCapture:
     def __init__(self):
@@ -98,13 +99,12 @@ async def consolidate(files: List[UploadFile] = File(...)):
                 "error": error_msg
             }
 
-        # Keep output file in memory for retrieval
+        # Read output file into RAM (never touches persistent disk)
         file_id = str(uuid.uuid4())
-        perm_temp_path = os.path.join(tempfile.gettempdir(), f"consolidated_{file_id}.xlsx")
-        shutil.copy2(output_path, perm_temp_path)
-        GENERATED_FILES[file_id] = perm_temp_path
+        with open(output_path, "rb") as f:
+            FILE_STORE[file_id] = f.read()
 
-        # Find and load the generated run audit log
+        # Capture audit log data from the ephemeral workspace
         audit_data = {}
         for f in os.listdir(tmp_dir):
             if f.startswith("run_audit_log") and f.endswith(".json"):
@@ -128,14 +128,15 @@ async def consolidate(files: List[UploadFile] = File(...)):
 
 @app.get("/api/download/{file_id}")
 async def download_file(file_id: str):
-    file_path = GENERATED_FILES.get(file_id)
-    if not file_path or not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail="File not found or expired")
+    # pop() removes the bytes from RAM immediately on serve
+    file_bytes = FILE_STORE.pop(file_id, None)
+    if file_bytes is None:
+        raise HTTPException(status_code=404, detail="File not found or already downloaded")
     
-    return FileResponse(
-        path=file_path,
-        filename="Consolidated_Report.xlsx",
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    return Response(
+        content=file_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=Consolidated_Report.xlsx"}
     )
 
 # Mount static files for the React frontend when built
