@@ -1,7 +1,7 @@
 client_id: "rbl_gold_loan"
 client_display_name: "RBL Bank Gold Loan Tracker"
 filename_pattern: "*RBL*Gold Loan*"
-active: true
+active: false
 
 sheets:
   "Master Data":

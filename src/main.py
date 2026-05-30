@@ -1,191 +1,223 @@
 import os
 import sys
+import glob
 import shutil
 import pandas as pd
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Tuple
 
-# Core pipeline imports
 from src.schema_loader import load_schema_config
 from src.readers.excel_reader import ingest_raw_rows
 from src.mappers.structure_mapper import map_raw_to_canonical
-from src.validators.format_validator import (
-    validate_and_cast_payment_tracker, 
-    validate_and_cast_master_data,
-    detect_duplicate_records
-)
-from src.rules.overrides import global_rules_engine, try_ingest_rbl_gold_loan_fallback
+from src.validators.format_validator import validate_sheet
+from src.rules.overrides import global_rules_engine, try_ingest_client_fallback
 from src.reconciliation.engine import PipelineReconciler
 from src.run_logging.logger import RunAuditLogger
 from src.writers.excel_writer import write_consolidated_workbook
+from src.models.domain_models import SchemaDefinition
 from src.models.exceptions import ConsolidationPlatformException
 
+
+def discover_clients(config_dir: str) -> List[Tuple[str, SchemaDefinition]]:
+    schemas = []
+    for f in os.listdir(config_dir):
+        if f.endswith(".yaml") or f.endswith(".yml"):
+            path = os.path.join(config_dir, f)
+            try:
+                schema = load_schema_config(path)
+                if schema.active:
+                    schemas.append((path, schema))
+            except Exception as e:
+                print(f"  [Warning] Skipping schema {f}: {e}")
+    return schemas
+
+
+def find_client_file(workspace_path: str, schema: SchemaDefinition) -> str:
+    pattern = os.path.join(workspace_path, schema.filename_pattern)
+    matches = glob.glob(pattern)
+    if not matches:
+        all_files = os.listdir(workspace_path)
+        pattern_lower = schema.filename_pattern.replace("*", "").lower()
+        matches = [
+            os.path.join(workspace_path, f) for f in all_files
+            if f.endswith(".xlsx") and pattern_lower in f.lower()
+        ]
+    if not matches:
+        raise FileNotFoundError(
+            f"No file matching pattern '{schema.filename_pattern}' for client '{schema.client_id}'"
+        )
+    # Prefer files that don't have " 2" suffix
+    best = matches[0]
+    for m in matches:
+        base = os.path.basename(m)
+        if " 2.xlsx" not in base:
+            best = m
+            break
+    return best
+
+
 def execute_e2e_consolidation(workspace_path: str, output_path: str):
-    print("="*80)
-    print("RUNNING ENTERPRISE excel CONSOLIDATION PIPELINE (ARCHITECTURE C)")
-    print("="*80)
+    print("=" * 80)
+    print("DYNAMIC CONSOLIDATION PIPELINE")
+    print("=" * 80)
 
-    # Initialize Audit Logger
     logger = RunAuditLogger()
-    logger.log_rule("INIT", "Pipeline E2E execution initialized under Architecture C.")
+    logger.log_rule("INIT", "Dynamic consolidation pipeline initialized.")
 
-    # Paths Setup
     config_dir = os.path.join(workspace_path, "config", "schemas")
-    axis_schema_path = os.path.join(config_dir, "axis_poa.yaml")
-    rbl_schema_path = os.path.join(config_dir, "rbl_poa.yaml")
-
-    # Verify Config files
-    if not os.path.exists(axis_schema_path) or not os.path.exists(rbl_schema_path):
-        err_msg = f"Mandatory configurations schemas not found in: {config_dir}"
+    if not os.path.exists(config_dir):
+        err_msg = f"Schema config directory not found: {config_dir}"
         logger.finalize("FAILED", error=Exception(err_msg))
         logger.write_log(workspace_path)
         raise FileNotFoundError(err_msg)
 
     try:
-        # 1. Load YAML Schema Configurations (Module 3)
-        print("\n[Step 1] Loading YAML Schema Mappings...")
-        axis_schema = load_schema_config(axis_schema_path)
-        rbl_schema = load_schema_config(rbl_schema_path)
-        logger.log_rule("SCHEMA_LOAD", "Axis and RBL YAML Schemas loaded successfully.")
+        # 1. Discover and load all active schemas
+        print("\n[Step 1] Discovering client schemas...")
+        discovered = discover_clients(config_dir)
+        if not discovered:
+            raise FileNotFoundError(f"No active schemas found in {config_dir}")
+        print(f"  Found {len(discovered)} active client schema(s).")
+        for path, schema in discovered:
+            print(f"    - {schema.client_id} ({schema.client_display_name})")
 
-        # 2. Locate client bank workbooks in workspace
-        # Locate Axis POA workbook
-        axis_file = None
-        for f in os.listdir(workspace_path):
-            if f.endswith(".xlsx") and "Axis Bank POA" in f and " 2.xlsx" not in f:
-                axis_file = os.path.join(workspace_path, f)
-                break
-        if not axis_file:
-            raise FileNotFoundError(f"Workbook matching Axis Bank POA pattern not found in {workspace_path}")
-            
-        # Locate RBL POA workbook
-        rbl_file = None
-        for f in os.listdir(workspace_path):
-            if f.endswith(".xlsx") and "RBL(Muthoot Fincorp)" in f:
-                rbl_file = os.path.join(workspace_path, f)
-                break
-        if not rbl_file:
-            raise FileNotFoundError(f"Workbook matching RBL Bank Muthoot pattern not found in {workspace_path}")
+        # 2. Process each client: find file, ingest, map, apply rules
+        print("\n[Step 2] Processing client workbooks...")
+        client_data: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
+        all_schemas = []
 
-        logger.log_file("axis_poa", axis_file)
-        logger.log_file("rbl_poa", rbl_file)
+        for schema_path, schema in discovered:
+            all_schemas.append(schema)
+            print(f"\n  Processing: {schema.client_id}...")
 
-        # 3. Ingestion & Boundary clean scanning (Module 4)
-        print("\n[Step 2] Reading bank worksheets (Dynamic row boundary filtering)...")
-        # Ingest Axis PT and MD
-        axis_pt_raw = ingest_raw_rows(axis_file, "Payment Tracker", axis_schema.sheets["Payment Tracker"].header_row, axis_schema.sheets["Payment Tracker"].data_start_row)
-        axis_md_raw = ingest_raw_rows(axis_file, "Master Data", axis_schema.sheets["Master Data"].header_row, axis_schema.sheets["Master Data"].data_start_row)
-        
-        # Ingest RBL PT and MD
-        rbl_pt_raw = ingest_raw_rows(rbl_file, "Payment Tracker", rbl_schema.sheets["Payment Tracker"].header_row, rbl_schema.sheets["Payment Tracker"].data_start_row)
-        rbl_md_raw = ingest_raw_rows(rbl_file, "Master Data", rbl_schema.sheets["Master Data"].header_row, rbl_schema.sheets["Master Data"].data_start_row)
+            filepath = find_client_file(workspace_path, schema)
+            logger.log_file(schema.client_id, filepath)
+            print(f"    Source: {os.path.basename(filepath)}")
 
-        # 4. Synonym Structure Mapping (Module 5)
-        print("\n[Step 3] Mapping synonym column headers to canonical business fields...")
-        axis_pt_mapped = map_raw_to_canonical(axis_pt_raw, "Payment Tracker", axis_schema)
-        axis_md_mapped = map_raw_to_canonical(axis_md_raw, "Master Data", axis_schema)
-        rbl_pt_mapped = map_raw_to_canonical(rbl_pt_raw, "Payment Tracker", rbl_schema)
-        rbl_md_mapped = map_raw_to_canonical(rbl_md_raw, "Master Data", rbl_schema)
+            client_sheets = {}
+            for sheet_name, sheet_def in schema.sheets.items():
+                print(f"    Reading sheet: {sheet_name}")
+                raw = ingest_raw_rows(
+                    filepath, sheet_name,
+                    sheet_def.header_row, sheet_def.data_start_row
+                )
+                mapped = map_raw_to_canonical(raw, sheet_name, schema)
+                transformed = global_rules_engine.execute_rules_on_records(
+                    mapped, schema.client_id, sheet_name
+                )
+                client_sheets[sheet_name] = transformed
+                print(f"      Rows: {len(transformed)}")
 
-        # 5. Rules Engine execution overrides (Modules 7 and 8)
-        print("\n[Step 4] Executing bank-specific overrides and rule checks...")
-        # Axis transformations (State Seeding)
-        axis_pt_transformed = global_rules_engine.execute_rules_on_records(axis_pt_mapped, "axis_poa", "Payment Tracker")
-        axis_md_transformed = global_rules_engine.execute_rules_on_records(axis_md_mapped, "axis_poa", "Master Data")
-        
-        # RBL transformations (Duplicate day counts, cancellation redirection)
-        rbl_pt_transformed = global_rules_engine.execute_rules_on_records(rbl_pt_mapped, "rbl_poa", "Payment Tracker")
-        rbl_md_transformed = global_rules_engine.execute_rules_on_records(rbl_md_mapped, "rbl_poa", "Master Data")
+            client_data[schema.client_id] = client_sheets
 
-        # Ingest RBL Gold Loan rows using fallback reader since no standalone GL workbook exists
-        rbl_gl_rows = try_ingest_rbl_gold_loan_fallback(workspace_path)
-        if rbl_gl_rows:
-            rbl_md_transformed.extend(rbl_gl_rows)
-            logger.log_rule("HR-004", f"Successfully extracted {len(rbl_gl_rows)} Gold Loan rows from backup file.")
+        # 3. Client-specific fallbacks (e.g. Gold Loan)
+        try_ingest_client_fallback(workspace_path, client_data, logger)
 
-        logger.log_counts("Axis POA - Payment Tracker Ingested", 0, len(axis_pt_transformed))
-        logger.log_counts("RBL Muthoot - Payment Tracker Ingested", 0, len(rbl_pt_transformed))
-        logger.log_counts("Axis POA - Master Data Ingested", 0, len(axis_md_transformed))
-        logger.log_counts("RBL Muthoot - Master Data Ingested (incl GL)", 0, len(rbl_md_transformed))
+        # 4. Validate and log counts
+        print("\n[Step 3] Validating records...")
+        all_validated: Dict[str, List[Dict[str, Any]]] = {}
+        all_warnings = []
 
-        # 6. Type validating & regex check formatting warnings (Module 6)
-        print("\n[Step 5] Running Pydantic casts and character regex validations...")
+        for schema in all_schemas:
+            for sheet_name, sheet_def in schema.sheets.items():
+                records = client_data.get(schema.client_id, {}).get(sheet_name, [])
+                validated, warnings = validate_sheet(records, sheet_def)
+                all_validated.setdefault(sheet_name, []).extend(validated)
+                all_warnings.extend(warnings)
+                logger.log_counts(
+                    f"{schema.client_id} - {sheet_name}",
+                    0, len(validated)
+                )
 
-        # Read IFSC exceptions from schema config (moved out of hard-coded code)
-        ifsc_exceptions = None
-        for col in axis_schema.sheets["Payment Tracker"].columns:
-            if col.canonical_name == "IFSC Code" and col.validation_exceptions:
-                ifsc_exceptions = col.validation_exceptions
-                break
-
-        # Validate Payment Tracker records
-        axis_pt_models, axis_pt_warns = validate_and_cast_payment_tracker(axis_pt_transformed, ifsc_exceptions=ifsc_exceptions)
-        rbl_pt_models, rbl_pt_warns = validate_and_cast_payment_tracker(rbl_pt_transformed, ifsc_exceptions=ifsc_exceptions)
-        
-        # Validate Master Data records
-        axis_md_models, axis_md_warns = validate_and_cast_master_data(axis_md_transformed)
-        rbl_md_models, rbl_md_warns = validate_and_cast_master_data(rbl_md_transformed)
-
-        # Log format warnings
-        for w in axis_pt_warns + rbl_pt_warns + axis_md_warns + rbl_md_warns:
+        for w in all_warnings:
             logger.log_warning(w["field"], w["row_idx"], w["message"])
 
-        # Detect duplicates on composites
-        duplicates = detect_duplicate_records(axis_pt_transformed + rbl_pt_transformed, ["Assayer Code", "Audit Month & Year"])
-        if duplicates:
-            print(f"\nValidation Notice: {len(duplicates)} duplicate assayer payment records found in this cycle:")
-            for d in duplicates:
-                print(f"  {d}")
-                logger.log_warning("DUPLICATE", 0, d)
+        dup_warnings = [w for w in all_warnings if w["field"] == "DUPLICATE"]
+        if dup_warnings:
+            print(f"\nValidation Notice: {len(dup_warnings)} duplicate records found.")
+            for d in dup_warnings[:5]:
+                print(f"  {d['message']}")
 
-        # Convert clean models back to DataFrames for reconciliation and openpyxl write
-        axis_pt_df = pd.DataFrame([m.model_dump(by_alias=True) for m in axis_pt_models])
-        rbl_pt_df = pd.DataFrame([m.model_dump(by_alias=True) for m in rbl_pt_models])
-        axis_md_df = pd.DataFrame([m.model_dump(by_alias=True) for m in axis_md_models])
-        rbl_md_df = pd.DataFrame([m.model_dump(by_alias=True) for m in rbl_md_models])
+        # 5. Build consolidated DataFrames per sheet (once per sheet)
+        print("\n[Step 4] Building consolidated DataFrames...")
+        cons_dfs: Dict[str, pd.DataFrame] = {}
+        sheets_done = set()
+        for schema in all_schemas:
+            for sheet_name in schema.sheets:
+                if sheet_name in sheets_done or sheet_name not in all_validated:
+                    continue
+                sheets_done.add(sheet_name)
+                cons_dfs[sheet_name] = pd.DataFrame(all_validated[sheet_name])
 
-        # Consolidated Target sheets
-        cons_pt_df = pd.concat([axis_pt_df, rbl_pt_df], ignore_index=True) if not axis_pt_df.empty or not rbl_pt_df.empty else pd.DataFrame()
-        cons_md_df = pd.concat([axis_md_df, rbl_md_df], ignore_index=True) if not axis_md_df.empty or not rbl_md_df.empty else pd.DataFrame()
+        # 6. Reconciliation
+        print("\n[Step 5] Running reconciliation checks...")
+        client_dfs: Dict[str, Dict[str, pd.DataFrame]] = {}
+        for schema in all_schemas:
+            cid = schema.client_id
+            client_dfs[cid] = {}
+            for sheet_name in schema.sheets:
+                records = client_data.get(cid, {}).get(sheet_name, [])
+                client_dfs[cid][sheet_name] = pd.DataFrame(records)
 
-        # 7. Mathematical Reconciliation circuit breaker (Module 9)
-        print("\n[Step 6] Running E2E mathematical reconciliation checks...")
-        reconciler = PipelineReconciler(axis_pt_df, rbl_pt_df, axis_md_df, rbl_md_df)
-        reconciler.verify_pt_reconciliation(cons_pt_df)
-        reconciler.verify_md_reconciliation(cons_md_df)
-        
+        reconciler = PipelineReconciler(client_dfs)
+        sheets_done.clear()
+        for schema in all_schemas:
+            for sheet_name, sheet_def in schema.sheets.items():
+                if sheet_name in sheets_done or sheet_name not in cons_dfs:
+                    continue
+                sheets_done.add(sheet_name)
+                reconciler.verify_sheet_reconciliation(
+                    sheet_name, cons_dfs[sheet_name],
+                    sum_columns=sheet_def.sum_columns
+                )
+
         logger.finalize("SUCCESS")
-        logger.log_counts("Consolidated Target - Payment Tracker", len(axis_pt_transformed) + len(rbl_pt_transformed), len(cons_pt_df))
-        logger.log_counts("Consolidated Target - Master Data", len(axis_md_transformed) + len(rbl_md_transformed), len(cons_md_df))
-        logger.log_sums("Consolidated Target - Total Pay Amount", axis_pt_df["Total pay"].sum() + rbl_pt_df["Total pay"].sum(), cons_pt_df["Total pay"].sum())
-        logger.log_sums("Consolidated Target - Base Pay Amount", axis_pt_df["Total pay (Base)"].sum() + rbl_pt_df["Total pay (Base)"].sum(), cons_pt_df["Total pay (Base)"].sum())
 
-        # 8. Safeguard Backup Original Consolidated workbook
+        # Log sums from all schemas (once per sheet)
+        sheets_done.clear()
+        for schema in all_schemas:
+            for sheet_name, sheet_def in schema.sheets.items():
+                if sheet_name in sheets_done or sheet_name not in cons_dfs:
+                    continue
+                sheets_done.add(sheet_name)
+                for sum_col in sheet_def.sum_columns:
+                    if sum_col in cons_dfs[sheet_name].columns:
+                        input_sum = 0.0
+                        for cid in client_dfs:
+                            df = client_dfs[cid].get(sheet_name, pd.DataFrame())
+                            if sum_col in df.columns:
+                                input_sum += df[sum_col].sum()
+                        cons_sum = cons_dfs[sheet_name][sum_col].sum()
+                        logger.log_sums(
+                            f"{sheet_name} - {sum_col}",
+                            input_sum, cons_sum
+                        )
+
+        # 7. Backup
         if os.path.exists(output_path):
             backup_path = output_path.replace(".xlsx", "_backup.xlsx")
-            print(f"\nSafeguard: Backing up existing consolidated workbook to: {os.path.basename(backup_path)}...")
+            print(f"\nSafeguard: Backing up existing file to: {os.path.basename(backup_path)}...")
             shutil.copy2(output_path, backup_path)
             logger.log_rule("SAFEGUARD", f"Backed up original file to {os.path.basename(backup_path)}")
 
-        # 9. Output compilation & Dynamic SUM injection (Module 11)
-        print("\n[Step 7] Compiling consolidated Excel output workbook...")
-        write_consolidated_workbook(axis_pt_df, rbl_pt_df, axis_md_df, rbl_md_df, output_path)
-        logger.log_rule("WRITE", f"Saved consolidated Excel workbook at: {os.path.basename(output_path)}")
+        # 8. Write output
+        print("\n[Step 6] Writing consolidated Excel workbook...")
+        write_consolidated_workbook(cons_dfs, all_schemas, output_path)
+        logger.log_rule("WRITE", f"Saved consolidated workbook at: {os.path.basename(output_path)}")
 
-        # 10. Write JSON Log
         logger.write_log(workspace_path)
-        print("\n==============================================================")
+        print("\n" + "=" * 80)
         print("CONSOLIDATION SUCCESSFUL! 100% RECONCILIATION MATCH VERIFIED.")
-        print("==============================================================")
+        print("=" * 80)
 
     except Exception as e:
-        print(f"\nPipeline execution aborted due to error: {e}", file=sys.stderr)
+        print(f"\nPipeline aborted: {e}", file=sys.stderr)
         logger.finalize("FAILED", error=e)
         logger.write_log(workspace_path)
         raise e
 
+
 if __name__ == "__main__":
     current_dir = os.path.dirname(os.path.abspath(__file__))
     workspace_dir = os.path.dirname(current_dir)
-    
     target_xlsx = os.path.join(workspace_dir, "Feb'26 consolidated.xlsx")
     execute_e2e_consolidation(workspace_dir, target_xlsx)

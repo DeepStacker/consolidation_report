@@ -7,6 +7,9 @@ sheets:
   "Payment Tracker":
     header_row: 1
     data_start_row: 2
+    client_column: "client"
+    s_no_column: "S.no"
+    sum_columns: ["Total pay (Base)", "Total pay"]
     columns:
       - canonical_name: "S.no"
         synonyms: ["S.no", "S.No", "S.No."]
@@ -122,6 +125,9 @@ sheets:
   "Master Data":
     header_row: 1
     data_start_row: 2
+    client_column: "Client"
+    s_no_column: "Sr No"
+    hidden_columns: [10, 11, 12, 13, 14, 15]
     columns:
       - canonical_name: "Sr No"
         synonyms: ["Sr No", "Sr No."]

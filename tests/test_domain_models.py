@@ -1,144 +1,123 @@
+"""Tests for domain models and schema-driven validation."""
+
 import pytest
-from pydantic import ValidationError
-from src.models.domain_models import PaymentTrackerRecord, MasterDataRecord
+from src.models.domain_models import SchemaDefinition, SheetDefinition, ColumnDefinition
+from src.schema_loader import load_schema_config
+from src.validators.format_validator import validate_sheet
 
-def test_valid_payment_tracker_record():
-    """Tests that a structurally valid Payment Tracker record parses successfully."""
-    valid_data = {
-        "S.no": 1,
-        "client": "Axis Bank POA",
-        "Assayer Name": "Guruprasad R Shet",
-        "Assayer Code": "AS0701",
-        "Assayer Phone": "9731605556",
-        "Location": "Koramangala",
-        "State": "Karnataka",
-        "Zone": "South",
-        "Audit Month & Year": "Feb'26",
-        "Type of Audit": "AXIS Bank POA",
-        "No. of Visits": 1,
-        "Base Audit Fee": 1000.0,
-        "Total pay (Base)": 1000.0,
-        " Travel charges(If any)": 0.0,
-        "Cancelled visits": 0.0,
-        "Branch Cancellation Charges": 0.0,
-        " Andaman & Nicobar Branch Expenses": 0.0,
-        "Error Deduction": 0.0,
-        "Total pay": 1000.0,
-        "Remarks (if any)": "Payment as per approval",
-        "PAN Number": "DWUPS3353D",
-        "Bank Name": "Indian Overseas Bank",
-        "A/c Number": "284801000003273",
-        "IFSC Code": "IOBA0002848"
-    }
-    
-    record = PaymentTrackerRecord.model_validate(valid_data)
-    assert record.s_no == 1
-    assert record.assayer_name == "Guruprasad R Shet"
-    assert record.assayer_code == "AS0701"
-    assert record.pan_number == "DWUPS3353D"
-    assert record.ifsc_code == "IOBA0002848"
 
-def test_invalid_pan_format():
-    """Tests that an invalid PAN format is rejected by the Pydantic validator."""
-    invalid_data = {
-        "S.no": 1,
-        "Assayer Name": "Guruprasad R Shet",
-        "Assayer Code": "AS0701",
-        "Audit Month & Year": "Feb'26",
-        "Type of Audit": "AXIS Bank POA",
-        "Total pay": 1000.0,
-        "PAN Number": "INVALIDPAN1"  # Invalid format
-    }
-    
-    with pytest.raises(ValidationError) as exc_info:
-        PaymentTrackerRecord.model_validate(invalid_data)
-    
-    assert "Invalid PAN format" in str(exc_info.value)
+class TestSchemaConfig:
+    """Verify YAML schema configs load correctly."""
 
-def test_invalid_ifsc_format():
-    """Tests that an invalid bank IFSC routing code is rejected by the validator."""
-    invalid_data = {
-        "S.no": 1,
-        "Assayer Name": "Guruprasad R Shet",
-        "Assayer Code": "AS0701",
-        "Audit Month & Year": "Feb'26",
-        "Type of Audit": "AXIS Bank POA",
-        "Total pay": 1000.0,
-        "IFSC Code": "IOBA1102848"  # Invalid format (fifth char is not 0)
-    }
-    
-    with pytest.raises(ValidationError) as exc_info:
-        PaymentTrackerRecord.model_validate(invalid_data)
-        
-    assert "Invalid IFSC format" in str(exc_info.value)
+    def test_axis_schema_loads(self):
+        schema = load_schema_config("config/schemas/axis_poa.yaml")
+        assert schema.client_id == "axis_poa"
+        assert "Payment Tracker" in schema.sheets
+        assert "Master Data" in schema.sheets
+        assert schema.active is True
 
-def test_invalid_assayer_code_format():
-    """Tests that an invalid assayer code triggers validation errors."""
-    invalid_data = {
-        "S.no": 1,
-        "Assayer Name": "Guruprasad R Shet",
-        "Assayer Code": "AB1234",  # Invalid prefix (must be AS or AD)
-        "Audit Month & Year": "Feb'26",
-        "Type of Audit": "AXIS Bank POA",
-        "Total pay": 1000.0
-    }
-    
-    with pytest.raises(ValidationError) as exc_info:
-        PaymentTrackerRecord.model_validate(invalid_data)
-        
-    assert "Invalid Assayer Code format" in str(exc_info.value)
+    def test_rbl_schema_loads(self):
+        schema = load_schema_config("config/schemas/rbl_poa.yaml")
+        assert schema.client_id == "rbl_poa"
+        assert "Payment Tracker" in schema.sheets
+        assert "Master Data" in schema.sheets
+        assert schema.active is True
 
-def test_serialization_support():
-    """Tests that the domain models support seamless dictionary dumping and serialization."""
-    valid_data = {
-        "S.no": 1,
-        "client": "Axis Bank POA",
-        "Assayer Name": "Guruprasad R Shet",
-        "Assayer Code": "AS0701",
-        "Assayer Phone": "9731605556",
-        "Location": "Koramangala",
-        "State": "Karnataka",
-        "Zone": "South",
-        "Audit Month & Year": "Feb'26",
-        "Type of Audit": "AXIS Bank POA",
-        "No. of Visits": 1,
-        "Base Audit Fee": 1000.0,
-        "Total pay (Base)": 1000.0,
-        " Travel charges(If any)": 0.0,
-        "Cancelled visits": 0.0,
-        "Branch Cancellation Charges": 0.0,
-        " Andaman & Nicobar Branch Expenses": 0.0,
-        "Error Deduction": 0.0,
-        "Total pay": 1000.0,
-        "Remarks (if any)": "Payment as per approval",
-        "PAN Number": "DWUPS3353D",
-        "Bank Name": "Indian Overseas Bank",
-        "A/c Number": "284801000003273",
-        "IFSC Code": "IOBA0002848"
-    }
-    
-    model = PaymentTrackerRecord.model_validate(valid_data)
-    serialized_dict = model.model_dump(by_alias=True)
-    
-    assert serialized_dict["S.no"] == 1
-    assert serialized_dict["Assayer Name"] == "Guruprasad R Shet"
-    assert serialized_dict["Assayer Code"] == "AS0701"
-    assert serialized_dict["PAN Number"] == "DWUPS3353D"
-    assert serialized_dict["IFSC Code"] == "IOBA0002848"
+    def test_column_definition_validation_exceptions(self):
+        """Verify validation_exceptions field works in schema loading."""
+        schema = load_schema_config("config/schemas/axis_poa.yaml")
+        pt = schema.sheets["Payment Tracker"]
+        ifsc = [c for c in pt.columns if c.canonical_name == "IFSC Code"]
+        assert len(ifsc) == 1
+        assert "0" in ifsc[0].validation_exceptions
+        assert "N.A" in ifsc[0].validation_exceptions
 
-def test_missing_mandatory_fields_fail():
-    """Tests that omission of strictly required fields results in validation failures."""
-    invalid_data = {
-        # Missing S.no, Assayer Name, and Assayer Code
-        "client": "Axis Bank POA",
-        "Total pay": 1000.0
-    }
-    
-    with pytest.raises(ValidationError) as exc_info:
-        PaymentTrackerRecord.model_validate(invalid_data)
-        
-    # Check that multiple fields are missing in error details
-    err_str = str(exc_info.value)
-    assert "S.no" in err_str
-    assert "Assayer Name" in err_str
-    assert "Assayer Code" in err_str
+    def test_sum_columns_in_schema(self):
+        schema = load_schema_config("config/schemas/axis_poa.yaml")
+        pt = schema.sheets["Payment Tracker"]
+        assert "Total pay (Base)" in pt.sum_columns
+        assert "Total pay" in pt.sum_columns
+
+    def test_hidden_columns_in_schema(self):
+        schema = load_schema_config("config/schemas/axis_poa.yaml")
+        md = schema.sheets["Master Data"]
+        assert 10 in md.hidden_columns
+        assert 15 in md.hidden_columns
+
+
+class TestSchemaDrivenValidation:
+    """Test that schema-driven validation works correctly."""
+
+    def test_mandatory_field_check(self):
+        sheet_def = SheetDefinition(
+            columns=[
+                ColumnDefinition(canonical_name="S.no", synonyms=[], datatype="integer", mandatory=True),
+                ColumnDefinition(canonical_name="Name", synonyms=[], datatype="string", mandatory=True),
+            ]
+        )
+        valid_records = [{"S.no": 1, "Name": "Test"}]
+        clean, warns = validate_sheet(valid_records, sheet_def)
+        assert len(clean) == 1
+        assert len(warns) == 0
+
+    def test_mandatory_field_missing(self):
+        sheet_def = SheetDefinition(
+            columns=[
+                ColumnDefinition(canonical_name="S.no", synonyms=[], datatype="integer", mandatory=True),
+                ColumnDefinition(canonical_name="Name", synonyms=[], datatype="string", mandatory=True),
+            ]
+        )
+        from src.models.exceptions import ValidationException
+        with pytest.raises(ValidationException):
+            validate_sheet([{"S.no": 1}], sheet_def)
+
+    def test_regex_validation(self):
+        sheet_def = SheetDefinition(
+            columns=[
+                ColumnDefinition(
+                    canonical_name="Code", synonyms=[], datatype="string",
+                    mandatory=True, validation_regex=r"^AS[0-9]{4}$"
+                ),
+            ]
+        )
+        clean, warns = validate_sheet([{"Code": "AS0001"}], sheet_def)
+        assert len(warns) == 0
+
+        clean, warns = validate_sheet([{"Code": "INVALID"}], sheet_def)
+        assert len(warns) == 1
+        assert "Code" in warns[0]["message"]
+
+    def test_regex_exceptions(self):
+        sheet_def = SheetDefinition(
+            columns=[
+                ColumnDefinition(
+                    canonical_name="IFSC", synonyms=[], datatype="string",
+                    validation_regex=r"^[A-Z]{4}0[A-Z0-9]{6}$",
+                    validation_exceptions=["0", "N.A"]
+                ),
+            ]
+        )
+        clean, warns = validate_sheet([{"IFSC": "0"}, {"IFSC": "N.A"}, {"IFSC": "SBIN0001234"}], sheet_def)
+        assert len(warns) == 0
+
+    def test_duplicate_detection(self):
+        sheet_def = SheetDefinition(
+            columns=[
+                ColumnDefinition(canonical_name="ID", synonyms=[], datatype="integer", mandatory=True),
+            ]
+        )
+        records = [{"ID": 1}, {"ID": 2}, {"ID": 1}]
+        clean, warns = validate_sheet(records, sheet_def, duplicate_keys=["ID"])
+        dupes = [w for w in warns if w["field"] == "DUPLICATE"]
+        assert len(dupes) == 1
+
+    def test_default_values_preserved(self):
+        sheet_def = SheetDefinition(
+            columns=[
+                ColumnDefinition(canonical_name="Name", synonyms=[], datatype="string", mandatory=True),
+                ColumnDefinition(canonical_name="Optional", synonyms=[], datatype="string", default_value="N/A"),
+            ]
+        )
+        records = [{"Name": "Test"}]
+        clean, warns = validate_sheet(records, sheet_def)
+        assert len(clean) == 1
