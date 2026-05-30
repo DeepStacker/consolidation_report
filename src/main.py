@@ -124,9 +124,10 @@ def execute_e2e_consolidation(workspace_path: str, output_path: str):
         # Detect duplicates on composites
         duplicates = detect_duplicate_records(axis_pt_transformed + rbl_pt_transformed, ["Assayer Code", "Audit Month & Year"])
         if duplicates:
-            print("\nValidation Notice: Duplicates assayer payment records found in this cycle:")
-            for d in duplicates[:5]:
+            print(f"\nValidation Notice: {len(duplicates)} duplicate assayer payment records found in this cycle:")
+            for d in duplicates:
                 print(f"  {d}")
+                logger.log_warning("DUPLICATE", 0, d)
 
         # Convert clean models back to DataFrames for reconciliation and openpyxl write
         axis_pt_df = pd.DataFrame([m.model_dump(by_alias=True) for m in axis_pt_models])
