@@ -134,10 +134,17 @@ def write_consolidated_workbook(
                                 val = datetime.strptime(val, "%Y-%m-%d")
                             except (ValueError, TypeError):
                                 pass
-                if isinstance(val, (datetime, date, time)) and not pd.isna(val):
+                if isinstance(val, time) and not pd.isna(val):
                     cell = ws.cell(row=current_row, column=c_idx, value=val)
                     cell.alignment = Alignment(horizontal="center")
-                    cell.number_format = "DD-MM-YYYY"
+                    cell.number_format = "hh:mm AM/PM"
+                elif isinstance(val, (datetime, date)) and not pd.isna(val):
+                    cell = ws.cell(row=current_row, column=c_idx, value=val)
+                    cell.alignment = Alignment(horizontal="center")
+                    if isinstance(val, datetime) and (val.year == 1899 or val.year == 1900 or "time" in col_name.lower() or "reporting" in col_name.lower()):
+                        cell.number_format = "hh:mm AM/PM"
+                    else:
+                        cell.number_format = "DD-MM-YYYY"
                 elif isinstance(val, (datetime, date, time)) and pd.isna(val):
                     cell = ws.cell(row=current_row, column=c_idx, value=None)
                 else:
