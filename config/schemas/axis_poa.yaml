@@ -167,68 +167,70 @@ sheets:
     client_column: Client
     s_no_column: Sr No
     column_order:
-    - "Sr No"
-    - "Client"
-    - "Month"
-    - "Zone"
-    - "SOL ID"
-    - "BRANCH"
-    - "Location "
-    - "State"
-    - "Total No.of A/cs"
-    - "Assayer Name"
-    - "Assayer Code"
-    - "AssayerPhone"
-    - "Assayer PAN"
-    - "Contact Person"
-    - "Schedule date"
+    - Sr No
+    - Client
+    - Month
+    - Zone
+    - SOL ID
+    - BRANCH
+    - 'Location '
+    - State
+    - Total No.of A/cs
+    - Assayer Name
+    - Assayer Code
+    - AssayerPhone
+    - Assayer PAN
+    - Contact Person
+    - Schedule date
     - "Audit \nStatus"
     - "Audit \ncompletion date"
     - "No of days \naudited "
     - "No of days \naudited For client"
     - "No of Packets \naudited"
-    - "Additional Packet"
-    - "Assayer Reporting time at Branch"
-    - "Audit start time"
-    - "Audit End Time"
-    - "Client fee"
-    - "Additional"
-    - "Final Client Fees"
-    - "Assayer fee"
-    - "Additional fee"
-    - "Distance"
-    - "Base Location"
-    - "Remarks"
-    - "Assayer fee.1"
-    - "Additional fee.1"
-    - "Cancelled"
-    - "Error Deduciton"
-    - "Total"
-    - "Audit Remarks"
-    - "Seeding Status"
-    - "Report"
-    - "Total pouches suggested for audit"
-    - "Already Audited"
-    - "A/C Closed"
-    - "A/C Auctioned"
-    - "Packet Missing"
-    - "Actual Audited (except already audited & A/C closed) "
-    - "Extra audited pouches"
-    - "Total No.of packets actually audited"
-    - "Type oof Audit"
-    - "Aadhar No"
-    - "Remarks.1"
-    - "Urban/ Rural"
-    - "T & F Client fee"
-    - "POA Client Fees"
-    - "Cancelled\nClient fee"
-    - "billing  remarks"
-    - "Touch and Feel Audit Packet Count"
+    - Additional Packet
+    - Assayer Reporting time at Branch
+    - Audit start time
+    - Audit End Time
+    - Client fee
+    - Additional
+    - Final Client Fees
+    - Assayer fee
+    - Additional fee
+    - Distance
+    - Base Location
+    - Remarks
+    - Assayer fee.1
+    - Additional fee.1
+    - Cancelled
+    - Error Deduciton
+    - Total
+    - Audit Remarks
+    - Seeding Status
+    - Report
+    - Total pouches suggested for audit
+    - Already Audited
+    - A/C Closed
+    - A/C Auctioned
+    - Packet Missing
+    - 'Actual Audited (except already audited & A/C closed) '
+    - Extra audited pouches
+    - Total No.of packets actually audited
+    - Type oof Audit
+    - Aadhar No
+    - Remarks.1
+    - Urban/ Rural
+    - T & F Client fee
+    - POA Client Fees
+    - 'Cancelled
+
+      Client fee'
+    - billing  remarks
+    - Touch and Feel Audit Packet Count
     - "POA \nPacket count"
-    - "Additional Packet  T& F"
-    - "Additional Packet  POA"
-    - "oracle_id"
-    - "Address"
+    - Additional Packet  T& F
+    - Additional Packet  POA
+    - oracle_id
+    - Address
     hidden_columns:
     - 10
     - 11
@@ -487,7 +489,9 @@ sheets:
     - canonical_name: Aadhar No
       datatype: string
       mandatory: false
-    - canonical_name: "Cancelled\nClient fee"
+    - canonical_name: 'Cancelled
+
+        Client fee'
       datatype: string
       mandatory: false
     - canonical_name: Address

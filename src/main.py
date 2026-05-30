@@ -87,12 +87,20 @@ def execute_e2e_consolidation(workspace_path: str, output_path: str):
         print("\n[Step 2] Processing client workbooks...")
         client_data: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
         all_schemas = []
+        processed_any = False
 
         for schema_path, schema in discovered:
             all_schemas.append(schema)
             print(f"\n  Processing: {schema.client_id}...")
 
-            filepath = find_client_file(workspace_path, schema)
+            try:
+                filepath = find_client_file(workspace_path, schema)
+            except FileNotFoundError:
+                print(f"    ⚠ No matching file found — skipping {schema.client_display_name}")
+                logger.log_rule("SKIP", f"No source file for {schema.client_id}, skipped.")
+                continue
+
+            processed_any = True
             logger.log_file(schema.client_id, filepath)
             print(f"    Source: {os.path.basename(filepath)}")
 
@@ -111,6 +119,13 @@ def execute_e2e_consolidation(workspace_path: str, output_path: str):
                 print(f"      Rows: {len(transformed)}")
 
             client_data[schema.client_id] = client_sheets
+
+        if not processed_any:
+            err_msg = "No source files matched any active schema. Nothing to consolidate."
+            logger.log_rule("FAIL", err_msg)
+            logger.finalize("FAILED", error=FileNotFoundError(err_msg))
+            logger.write_log(workspace_path)
+            raise FileNotFoundError(err_msg)
 
         # 3. Client-specific fallbacks (e.g. Gold Loan)
         try_ingest_client_fallback(workspace_path, client_data, logger)
