@@ -88,31 +88,52 @@ global_rules_engine.register_rule(rbl_md_rule_def, rbl_md_days_duplication)
 # -----------------------------------------------------------------------------
 
 def try_ingest_rbl_gold_loan_fallback(workspace_path: str) -> List[Dict[str, Any]]:
-    """HR-004: Tries to read RBL Gold Loan rows directly from existing consolidated workbook."""
+    """HR-004: Tries to read RBL Gold Loan rows from a standalone workbook first,
+    falling back to the existing consolidated file."""
+    from src.schema_loader import load_schema_config
+    from src.readers.excel_reader import ingest_raw_rows
+
+    # 1. Try standalone Gold Loan workbook via schema pattern
+    gl_schema_path = os.path.join(workspace_path, "config", "schemas", "rbl_gold_loan.yaml")
+    if os.path.exists(gl_schema_path):
+        try:
+            gl_schema = load_schema_config(gl_schema_path)
+            for f in os.listdir(workspace_path):
+                if f.endswith(".xlsx") and "RBL" in f and "Gold" in f:
+                    gl_file = os.path.join(workspace_path, f)
+                    print(f"Found standalone Gold Loan workbook: {f}")
+                    raw_rows = ingest_raw_rows(
+                        gl_file, "Master Data",
+                        gl_schema.sheets["Master Data"].header_row,
+                        gl_schema.sheets["Master Data"].data_start_row
+                    )
+                    if raw_rows:
+                        print(f"Ingested {len(raw_rows)} RBL Gold Loan rows from standalone workbook.")
+                        return raw_rows
+        except Exception as e:
+            print(f"Could not read standalone Gold Loan workbook: {e}")
+
+    # 2. Fallback: extract from existing consolidated workbook
     existing_cons_file = os.path.join(workspace_path, "Feb'26 consolidated.xlsx")
     if not os.path.exists(existing_cons_file):
-        # Try finding a backup file if primary is missing
         backup_cons_file = os.path.join(workspace_path, "Feb'26 consolidated_backup.xlsx")
         if os.path.exists(backup_cons_file):
             existing_cons_file = backup_cons_file
-            
+
     if os.path.exists(existing_cons_file):
         try:
-            print("RBL Gold Loan tracker not found. Extracting 252 GL rows from existing consolidated file...")
+            print("Extracting RBL Gold Loan rows from existing consolidated file...")
             df_cons = pd.read_excel(existing_cons_file, sheet_name="Master Data")
-            # Gold Loan rows are rows under Client == RBL(muthoot) that have SOL ID as null/NaN and a valid Assayer Code
             df_gl = df_cons[(df_cons["Client"] == "RBL(muthoot)") & (df_cons["SOL ID"].isna()) & (df_cons["Assayer Code"].notna())]
-            
+
             if not df_gl.empty:
                 df_gl = df_gl.copy()
                 df_gl["Client"] = "RBL(muthoot)"
-                
-                # Replace NaT and NaN values with None for openpyxl compatibility
                 df_gl = df_gl.replace({np.nan: None})
                 gl_records = df_gl.to_dict(orient="records")
-                print(f"Ingested {len(gl_records)} RBL Gold Loan rows successfully.")
+                print(f"Ingested {len(gl_records)} RBL Gold Loan rows from existing consolidated file.")
                 return gl_records
         except Exception as e:
             print(f"Warning: Could not extract Gold Loan rows from existing consolidated file: {e}")
-            
+
     return []
