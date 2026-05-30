@@ -20,6 +20,7 @@ class ColumnDefinition(BaseModel):
     mandatory: bool = Field(default=False, description="Flag indicating if the column is strictly required.")
     default_value: Any = Field(default=None, description="Fallback value if optional column is missing or blank.")
     validation_regex: Optional[str] = Field(default=None, description="Optional regular expression for format checking.")
+    validation_exceptions: List[str] = Field(default_factory=list, description="Optional list of allowed values that bypass regex validation.")
     copy_from_column: Optional[str] = Field(default=None, description="Optional source column name to copy data from.")
 
 class SheetDefinition(BaseModel):

@@ -109,9 +109,17 @@ def execute_e2e_consolidation(workspace_path: str, output_path: str):
 
         # 6. Type validating & regex check formatting warnings (Module 6)
         print("\n[Step 5] Running Pydantic casts and character regex validations...")
+
+        # Read IFSC exceptions from schema config (moved out of hard-coded code)
+        ifsc_exceptions = None
+        for col in axis_schema.sheets["Payment Tracker"].columns:
+            if col.canonical_name == "IFSC Code" and col.validation_exceptions:
+                ifsc_exceptions = col.validation_exceptions
+                break
+
         # Validate Payment Tracker records
-        axis_pt_models, axis_pt_warns = validate_and_cast_payment_tracker(axis_pt_transformed)
-        rbl_pt_models, rbl_pt_warns = validate_and_cast_payment_tracker(rbl_pt_transformed)
+        axis_pt_models, axis_pt_warns = validate_and_cast_payment_tracker(axis_pt_transformed, ifsc_exceptions=ifsc_exceptions)
+        rbl_pt_models, rbl_pt_warns = validate_and_cast_payment_tracker(rbl_pt_transformed, ifsc_exceptions=ifsc_exceptions)
         
         # Validate Master Data records
         axis_md_models, axis_md_warns = validate_and_cast_master_data(axis_md_transformed)

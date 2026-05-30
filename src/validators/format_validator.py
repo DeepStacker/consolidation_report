@@ -52,17 +52,19 @@ def detect_duplicate_records(records: List[Dict[str, Any]], unique_keys: List[st
             
     return duplicates_found
 
-def validate_and_cast_payment_tracker(records: List[Dict[str, Any]]) -> Tuple[List[PaymentTrackerRecord], List[Dict[str, Any]]]:
+def validate_and_cast_payment_tracker(records: List[Dict[str, Any]],
+                                       ifsc_exceptions: List[str] = None) -> Tuple[List[PaymentTrackerRecord], List[Dict[str, Any]]]:
     """Validates and casts Payment Tracker records using Pydantic V2, returning clean models and warnings."""
     clean_models = []
     warnings = []
+    
+    ifsc_exceptions = ifsc_exceptions or ["0", "N.A", "SBIN002105", "IB000T100"]
     
     regex_rules = {
         "Assayer Code": r"^AS[0-9]{4}$|^AD[0-9]{4}$",
         "PAN Number": r"^[A-Z]{5}[0-9]{4}[A-Z]{1}$",
         "IFSC Code": r"^[A-Z]{4}0[A-Z0-9]{6}$"
     }
-    ifsc_exceptions = ["0", "N.A", "SBIN002105", "IB000T100"]
     
     for idx, row in enumerate(records, 2):
         # Run required validations

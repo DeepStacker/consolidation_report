@@ -116,6 +116,7 @@ sheets:
         synonyms: ["IFSC Code", "IFSC"]
         datatype: "string"
         validation_regex: "^[A-Z]{4}0[A-Z0-9]{6}$"
+        validation_exceptions: ["0", "N.A", "SBIN002105", "IB000T100"]
         mandatory: false
 
   "Master Data":
