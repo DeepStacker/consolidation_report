@@ -49,8 +49,6 @@ def rbl_md_days_duplication(row: Dict[str, Any]) -> Dict[str, Any]:
     row["Client"] = "RBL(muthoot)"
     row["Seeding Status"] = None
     row["Report"] = None
-    row["Assayer fee.1"] = None
-    row["Additional fee.1"] = None
     if not row.get("Location "):
         val = row.get("State", None)
         if val is not None:

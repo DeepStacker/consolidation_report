@@ -15,6 +15,11 @@ sheets:
   "Payment Tracker":
     header_row: 1
     data_start_row: 2
+    client_column: "client"
+    s_no_column: "S.no"
+    sum_columns:
+      - "Total pay (Base)"
+      - "Total pay"
     columns:
       - canonical_name: "S.no"
         synonyms: ["S.no"]
@@ -225,6 +230,11 @@ sheets:
   "Payment Tracker":
     header_row: 1
     data_start_row: 2
+    client_column: "client"
+    s_no_column: "S.no"
+    sum_columns:
+      - "Total pay (Base)"
+      - "Total pay"
     columns:
       - canonical_name: "S.no"
         synonyms: ["S.no"]
@@ -447,8 +457,21 @@ sheets:
     df_md = pd.read_excel(output_xlsx, sheet_name="Master Data")
 
     # Clean rows count should match standalone (1 Axis PT + 1 RBL PT = 2 clean PT rows)
-    # The dataframe has an empty row and totals row at the bottom, so length of df_pt is 4
-    assert len(df_pt) == 4 # Row 2 and 3 are data, row 4 is empty, row 5 is totals
+    # Pandas drops the spacer and formula-only totals rows as they have only NaN/formula values
+    assert len(df_pt) == 2
+
+    # Assert using openpyxl that the dynamic totals row is written at row 5
+    import openpyxl
+    wb = openpyxl.load_workbook(output_xlsx)
+    ws = wb["Payment Tracker"]
+    # Row 4 is empty spacer row
+    assert ws.cell(row=4, column=1).value is None
+    # Row 5 has dynamic totals SUM formulas
+    cols = [ws.cell(row=1, column=c).value for c in range(1, ws.max_column + 1)]
+    assert "Total pay" in cols
+    tot_pay_idx = cols.index("Total pay") + 1
+    col_letter = openpyxl.utils.get_column_letter(tot_pay_idx)
+    assert ws.cell(row=5, column=tot_pay_idx).value == f"=SUM({col_letter}2:{col_letter}4)"
     
     # First row is Axis Bank
     assert df_pt.iloc[0]["client"] == "Axis Bank POA"
