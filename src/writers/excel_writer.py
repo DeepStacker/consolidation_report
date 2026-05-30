@@ -1,7 +1,8 @@
 import os
 import openpyxl
 import pandas as pd
-from datetime import datetime, date
+from datetime import datetime, date, time
+import re
 from typing import Dict, List, Any
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 from openpyxl.utils import get_column_letter
@@ -40,6 +41,29 @@ def _first_sheet_def(schemas: List[SchemaDefinition], sheet_name: str) -> SheetD
     return None
 
 
+def _header_name(col_name: str, columns: List) -> str:
+    for c in columns:
+        if c.canonical_name == col_name:
+            return c.header_name or c.canonical_name
+    return col_name
+
+
+def _resolve_column_order(schemas: List[SchemaDefinition], sheet_name: str) -> List[str]:
+    for s in schemas:
+        if sheet_name in s.sheets:
+            sd = s.sheets[sheet_name]
+            if sd.column_order:
+                return sd.column_order
+    return _union_sheet_columns(schemas, sheet_name)
+
+
+def _convert_time_24h(val: Any) -> Any:
+    if isinstance(val, str) and re.match(r'^\d{2}:\d{2}:\d{2}$', val.strip()):
+        parts = val.strip().split(':')
+        return time(int(parts[0]), int(parts[1]), int(parts[2]))
+    return val
+
+
 def write_consolidated_workbook(
     sheet_data: Dict[str, pd.DataFrame],
     schemas: List[SchemaDefinition],
@@ -58,18 +82,28 @@ def write_consolidated_workbook(
     for sheet_name, df in sheet_data.items():
         ws = wb.create_sheet(title=sheet_name)
 
-        all_columns = _union_sheet_columns(schemas, sheet_name)
         sheet_def = _first_sheet_def(schemas, sheet_name)
-        if not sheet_def or not all_columns:
+        if not sheet_def:
+            continue
+        all_columns = _resolve_column_order(schemas, sheet_name)
+        if not all_columns:
             continue
         s_no_col = sheet_def.s_no_column
         client_col = sheet_def.client_column
         sum_cols = sheet_def.sum_columns
         hidden_cols = sheet_def.hidden_columns
         header_fill = header_fills.get(sheet_name, default_fill)
+        all_col_defs = sheet_def.columns
+
+        for other_schema in schemas:
+            if sheet_name in other_schema.sheets:
+                for c in other_schema.sheets[sheet_name].columns:
+                    if c.canonical_name not in [x.canonical_name for x in all_col_defs]:
+                        all_col_defs.append(c)
 
         for c_idx, col_name in enumerate(all_columns, 1):
-            cell = ws.cell(row=1, column=c_idx, value=col_name)
+            hdr = _header_name(col_name, all_col_defs)
+            cell = ws.cell(row=1, column=c_idx, value=hdr)
             format_cell(
                 cell, bold=True, color="FFFFFF", fill=header_fill,
                 alignment=Alignment(horizontal="center", vertical="center", wrap_text=True)
@@ -84,10 +118,27 @@ def write_consolidated_workbook(
                 row_data[s_no_col] = seq
             for c_idx, col_name in enumerate(all_columns, 1):
                 val = row_data.get(col_name, None)
-                if isinstance(val, (datetime, date)) and not pd.isna(val):
-                    cell = ws.cell(row=current_row, column=c_idx, value=val.strftime("%Y-%m-%d"))
+                if isinstance(val, str) and not pd.isna(val):
+                    val = val.rstrip()
+                    if re.match(r'^\d{1,9}$', val):
+                        try:
+                            val = int(val)
+                        except (ValueError, TypeError):
+                            pass
+                    else:
+                        parsed = _convert_time_24h(val)
+                        if isinstance(parsed, time):
+                            val = parsed
+                        else:
+                            try:
+                                val = datetime.strptime(val, "%Y-%m-%d")
+                            except (ValueError, TypeError):
+                                pass
+                if isinstance(val, (datetime, date, time)) and not pd.isna(val):
+                    cell = ws.cell(row=current_row, column=c_idx, value=val)
                     cell.alignment = Alignment(horizontal="center")
-                elif isinstance(val, (datetime, date)) and pd.isna(val):
+                    cell.number_format = "DD-MM-YYYY"
+                elif isinstance(val, (datetime, date, time)) and pd.isna(val):
                     cell = ws.cell(row=current_row, column=c_idx, value=None)
                 else:
                     cell = ws.cell(row=current_row, column=c_idx, value=val)
@@ -105,7 +156,7 @@ def write_consolidated_workbook(
         if sum_cols:
             total_row = data_end_row + 2
             sum_end_row = data_end_row + 1
-            cell_tot_lbl = ws.cell(row=total_row, column=1, value="Total")
+            cell_tot_lbl = ws.cell(row=total_row, column=1, value="")
             format_cell(cell_tot_lbl, bold=True, alignment=Alignment(horizontal="center"))
 
             for sum_col in sum_cols:

@@ -13,6 +13,7 @@ class ColumnDefinition(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
     
     canonical_name: str = Field(description="The final target column name in the consolidated workbook.")
+    header_name: Optional[str] = Field(default=None, description="Display name in Excel header row. Defaults to canonical_name.")
     synonyms: List[str] = Field(default_factory=list, description="List of recognized variations of the header name.")
     datatype: str = Field(description="Target datatype. Expected: 'integer', 'decimal', 'date', 'time', 'string'.")
     mandatory: bool = Field(default=False, description="Flag indicating if the column is strictly required.")
@@ -34,6 +35,7 @@ class SheetDefinition(BaseModel):
     hidden_columns: List[int] = Field(default_factory=list, description="1-based column indices to hide in the output sheet.")
     client_column: Optional[str] = Field(default=None, description="Column name that identifies the client/bank.")
     s_no_column: Optional[str] = Field(default=None, description="Column name for sequential numbering.")
+    column_order: List[str] = Field(default_factory=list, description="Explicit output column order. Overrides computed union.")
 
 class SchemaDefinition(BaseModel):
     """

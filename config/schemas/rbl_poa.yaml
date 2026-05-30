@@ -214,6 +214,7 @@ sheets:
       synonyms:
       - 'Location '
       - Location
+      copy_from_column: State
       datatype: string
       mandatory: false
     - canonical_name: State
@@ -226,7 +227,7 @@ sheets:
       - Total No.of A/cs
       - Total No. of A/cs
       datatype: integer
-      default_value: 0
+      default_value: 1
       mandatory: false
     - canonical_name: Assayer Name
       synonyms:
@@ -344,14 +345,12 @@ sheets:
       - Assayer Fees
       - Assayer fee
       datatype: decimal
-      default_value: 0.0
       mandatory: false
     - canonical_name: Additional fee
       synonyms:
       - Additional Fees
       - Additional fee
       datatype: decimal
-      default_value: 0.0
       mandatory: false
     - canonical_name: Distance
       synonyms:

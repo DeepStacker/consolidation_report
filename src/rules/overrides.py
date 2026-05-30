@@ -51,9 +51,16 @@ def rbl_md_days_duplication(row: Dict[str, Any]) -> Dict[str, Any]:
     row["Report"] = None
     row["Assayer fee.1"] = None
     row["Additional fee.1"] = None
+    if not row.get("Location "):
+        val = row.get("State", None)
+        if val is not None:
+            row["Location "] = str(val).strip()
     days = row.get("No of days \naudited ")
     if days is not None and days != 0:
         row["No of days \naudited For client"] = days
+    packets = row.get("Total No.of packets actually audited")
+    if packets is not None and packets != 0:
+        row["No of Packets \naudited"] = packets
     return row
 
 

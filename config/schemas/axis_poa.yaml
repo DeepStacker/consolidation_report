@@ -166,6 +166,69 @@ sheets:
     data_start_row: 2
     client_column: Client
     s_no_column: Sr No
+    column_order:
+    - "Sr No"
+    - "Client"
+    - "Month"
+    - "Zone"
+    - "SOL ID"
+    - "BRANCH"
+    - "Location "
+    - "State"
+    - "Total No.of A/cs"
+    - "Assayer Name"
+    - "Assayer Code"
+    - "AssayerPhone"
+    - "Assayer PAN"
+    - "Contact Person"
+    - "Schedule date"
+    - "Audit \nStatus"
+    - "Audit \ncompletion date"
+    - "No of days \naudited "
+    - "No of days \naudited For client"
+    - "No of Packets \naudited"
+    - "Additional Packet"
+    - "Assayer Reporting time at Branch"
+    - "Audit start time"
+    - "Audit End Time"
+    - "Client fee"
+    - "Additional"
+    - "Final Client Fees"
+    - "Assayer fee"
+    - "Additional fee"
+    - "Distance"
+    - "Base Location"
+    - "Remarks"
+    - "Assayer fee.1"
+    - "Additional fee.1"
+    - "Cancelled"
+    - "Error Deduciton"
+    - "Total"
+    - "Audit Remarks"
+    - "Seeding Status"
+    - "Report"
+    - "Total pouches suggested for audit"
+    - "Already Audited"
+    - "A/C Closed"
+    - "A/C Auctioned"
+    - "Packet Missing"
+    - "Actual Audited (except already audited & A/C closed) "
+    - "Extra audited pouches"
+    - "Total No.of packets actually audited"
+    - "Type oof Audit"
+    - "Aadhar No"
+    - "Remarks.1"
+    - "Urban/ Rural"
+    - "T & F Client fee"
+    - "POA Client Fees"
+    - "Cancelled\nClient fee"
+    - "billing  remarks"
+    - "Touch and Feel Audit Packet Count"
+    - "POA \nPacket count"
+    - "Additional Packet  T& F"
+    - "Additional Packet  POA"
+    - "oracle_id"
+    - "Address"
     hidden_columns:
     - 10
     - 11
@@ -226,7 +289,7 @@ sheets:
       - Total No.of A/cs
       - Total No. of A/cs
       datatype: integer
-      default_value: 0
+      default_value: 1
       mandatory: false
     - canonical_name: Assayer Name
       synonyms:
@@ -371,6 +434,7 @@ sheets:
       datatype: string
       mandatory: false
     - canonical_name: Assayer fee.1
+      header_name: Assayer fee
       synonyms:
       - Assayer fee.1
       - Assayer Fees.1
@@ -378,6 +442,7 @@ sheets:
       default_value: 0.0
       mandatory: false
     - canonical_name: Additional fee.1
+      header_name: Additional fee
       synonyms:
       - Additional fee.1
       - Additional Fees.1
@@ -456,6 +521,9 @@ sheets:
       datatype: string
       mandatory: false
     - canonical_name: Remarks.1
+      header_name: Remarks
+      synonyms:
+      - Remarks.1
       datatype: string
       mandatory: false
     - canonical_name: Type oof Audit
