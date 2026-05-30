@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+
+# Excel source/output files
+*.xlsx
+
+# Run audit logs
+run_audit_log_*.json
+
+# Scratch / experimental
+scratch/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
