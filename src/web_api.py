@@ -9,6 +9,7 @@ from typing import List, Dict, Any
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import FileResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from src.main import execute_e2e_consolidation
 
@@ -22,6 +23,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Compress JSON responses (schema lists, preview data, audit logs)
+app.add_middleware(GZipMiddleware, minimum_size=500)
 
 from datetime import datetime
 
@@ -279,10 +283,18 @@ def _compute_audit_summary(audit: dict) -> dict:
 # ──────────────────────────────────────────────
 
 import yaml
+from functools import lru_cache
 
 SCHEMAS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config", "schemas")
 
 
+def _clear_schema_cache():
+    """Invalidate schema file caches after write operations."""
+    _find_schema_file.cache_clear()
+    _read_schema_yaml.cache_clear()
+
+
+@lru_cache(maxsize=32)
 def _find_schema_file(client_id: str) -> str | None:
     """Find schema YAML file by client_id."""
     if not os.path.isdir(SCHEMAS_DIR):
@@ -300,12 +312,14 @@ def _find_schema_file(client_id: str) -> str | None:
     return None
 
 
+@lru_cache(maxsize=64)
 def _read_schema_yaml(filepath: str) -> dict:
     with open(filepath) as fh:
         return yaml.safe_load(fh)
 
 
 def _write_schema_yaml(filepath: str, data: dict):
+    _clear_schema_cache()
     with open(filepath, "w") as fh:
         yaml.dump(data, fh, default_flow_style=False, sort_keys=False, allow_unicode=True)
 
@@ -371,6 +385,7 @@ async def update_schema(client_id: str, data: dict):
         if _find_schema_file(new_id):
             raise HTTPException(status_code=409, detail=f"Schema '{new_id}' already exists")
         os.remove(fp)
+        _clear_schema_cache()
         fp = os.path.join(SCHEMAS_DIR, f"{new_id}.yaml")
     _write_schema_yaml(fp, data)
     return {"success": True, "client_id": new_id or client_id}
@@ -378,11 +393,11 @@ async def update_schema(client_id: str, data: dict):
 
 @app.delete("/api/schemas/{client_id}")
 async def delete_schema(client_id: str):
-    """Delete a schema YAML file."""
     fp = _find_schema_file(client_id)
     if not fp:
         raise HTTPException(status_code=404, detail=f"Schema '{client_id}' not found")
     os.remove(fp)
+    _clear_schema_cache()
     return {"success": True, "client_id": client_id}
 
 

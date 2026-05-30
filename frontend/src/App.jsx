@@ -1,10 +1,15 @@
-import React, { useState, useEffect } from 'react';
-import ConsolidateView from './ConsolidateView';
-import SchemaManager from './SchemaManager';
+import React, { useState, useEffect, lazy, Suspense } from 'react';
+
+const ConsolidateView = lazy(() => import('./ConsolidateView'));
+const SchemaManager = lazy(() => import('./SchemaManager'));
 
 function getTabFromHash() {
   const hash = window.location.hash.replace('#', '');
   return hash === 'schemas' ? 'schemas' : 'consolidate';
+}
+
+function Fallback() {
+  return <div className="container" style={{ display: 'flex', justifyContent: 'center', padding: '80px', color: 'var(--text-muted)' }}>Loading…</div>;
 }
 
 export default function App() {
@@ -44,10 +49,10 @@ export default function App() {
         </div>
       </nav>
       <main className="app-main">
-        <div className="container">
+        <Suspense fallback={<Fallback />}>
           {tab === "consolidate" && <ConsolidateView />}
           {tab === "schemas" && <SchemaManager />}
-        </div>
+        </Suspense>
       </main>
     </div>
   );
