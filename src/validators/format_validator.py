@@ -11,14 +11,18 @@ def check_mandatory_fields(row: Dict[str, Any], mandatory_fields: List[str], row
         if val is None or (isinstance(val, str) and val.strip() == ""):
             raise ValidationException(f"Mandatory Field '{field}' is missing or empty at Row {row_idx}")
 
-def run_regex_matches(row: Dict[str, Any], regex_rules: Dict[str, str], row_idx: int) -> List[Dict[str, Any]]:
+def run_regex_matches(row: Dict[str, Any], regex_rules: Dict[str, str], row_idx: int,
+                      allowed_exceptions: Dict[str, List[str]] = None) -> List[Dict[str, Any]]:
     """Runs regex checks on string fields, returning warnings if patterns are not matched."""
     warnings = []
+    exceptions = allowed_exceptions or {}
     for field_name, pattern in regex_rules.items():
         if field_name in row:
             val = row[field_name]
             if val is not None and str(val).strip() != "":
                 val_str = str(val).strip()
+                if val_str in exceptions.get(field_name, []):
+                    continue
                 if not re.match(pattern, val_str):
                     msg = f"Format Warning: Field '{field_name}' value '{val_str}' at Row {row_idx} does not match pattern '{pattern}'"
                     warnings.append({
@@ -58,13 +62,14 @@ def validate_and_cast_payment_tracker(records: List[Dict[str, Any]]) -> Tuple[Li
         "PAN Number": r"^[A-Z]{5}[0-9]{4}[A-Z]{1}$",
         "IFSC Code": r"^[A-Z]{4}0[A-Z0-9]{6}$"
     }
+    ifsc_exceptions = ["0", "N.A", "SBIN002105", "IB000T100"]
     
     for idx, row in enumerate(records, 2):
         # Run required validations
         check_mandatory_fields(row, ["S.no", "Assayer Name", "Assayer Code", "Total pay"], idx)
         
         # Capture regex warnings
-        row_warnings = run_regex_matches(row, regex_rules, idx)
+        row_warnings = run_regex_matches(row, regex_rules, idx, allowed_exceptions={"IFSC Code": ifsc_exceptions})
         warnings.extend(row_warnings)
         
         # Pydantic validation & cast
