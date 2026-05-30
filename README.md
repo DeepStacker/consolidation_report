@@ -1,7 +1,7 @@
 ---
 title: Excel Consolidation Pipeline
 emoji: 📊
-colorFrom: cyan
+colorFrom: blue
 colorTo: indigo
 sdk: docker
 pinned: false
