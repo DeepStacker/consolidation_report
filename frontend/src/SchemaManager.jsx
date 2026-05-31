@@ -249,8 +249,12 @@ export default function SchemaManager() {
     const targetHeaders = sheetTargetHeaders[sheetName] || [];
     targetHeaders.forEach(h => fields.add(h));
     
-    // Always include global canonical fields (not just as fallback)
-    canonFields.forEach(f => fields.add(f));
+    // Fallback: add global canonFields only if this sheet would otherwise be empty
+    // (covers columns like "Location" that are in schema YAML but not in schemas
+    //  state or consolidated headers at initial load)
+    if (fields.size === 0) {
+      canonFields.forEach(f => fields.add(f));
+    }
     
     return Array.from(fields);
   }, [schemas, canonFields, sheetTargetHeaders]);
