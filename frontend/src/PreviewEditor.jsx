@@ -605,7 +605,7 @@ export default function PreviewEditor({ fileId, onClose }) {
       setSaveDone(true);
       setTimeout(() => {
         window.open(`${API_BASE}/api/download/${result.file_id}`, '_blank');
-        onClose();
+        onClose(result.file_id);
       }, 600);
     } catch (e) { alert(`Save failed: ${e.message}`); setSaving(false); }
   };

@@ -383,7 +383,10 @@ export default function ConsolidateView() {
       </div>
 
       {showPreview && fileId && (
-        <PreviewEditor fileId={fileId} onClose={() => setShowPreview(false)} />
+        <PreviewEditor fileId={fileId} onClose={(newFileId) => {
+          if (newFileId) setFileId(newFileId);
+          setShowPreview(false);
+        }} />
       )}
     </>
   );

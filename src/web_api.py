@@ -7,6 +7,7 @@ import io
 import json
 import urllib.request
 import asyncio
+import contextlib
 from io import StringIO
 from typing import List, Dict, Any
 from datetime import datetime, date
@@ -60,14 +61,14 @@ def _trim_file_store():
 class LogCapture:
     def __init__(self):
         self.stream = StringIO()
-        self.orig_stdout = sys.stdout
 
     def __enter__(self):
-        sys.stdout = self.stream
+        self._redirect = contextlib.redirect_stdout(self.stream)
+        self._redirect.__enter__()
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        sys.stdout = self.orig_stdout
+        self._redirect.__exit__(exc_type, exc_val, exc_tb)
 
     def get_logs(self) -> str:
         return self.stream.getvalue()
