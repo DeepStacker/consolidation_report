@@ -183,9 +183,10 @@ export default function SchemaManager() {
   const [createName, setCreateName] = useState("");
   const [createDisplay, setCreateDisplay] = useState("");
   const [createPattern, setCreatePattern] = useState("");
-  const [createMappings, setCreateMappings] = useState({}); // sheetIdx -> col -> { canonical, datatype, mandatory, default_value, copy_from_column }
+  const [createActive, setCreateActive] = useState(true);
+  const [createMappings, setCreateMappings] = useState({}); // destSheet -> canonCol -> { mapping_type, source_sheet_idx, source_column, static_value, copy_from_column, datatype, mandatory, default_value }
   const [createPreviews, setCreatePreviews] = useState({}); // sheetIdx -> col -> [samples]
-  const [createSumColumns, setCreateSumColumns] = useState({}); // sheetIdx -> [canonical]
+  const [createSumColumns, setCreateSumColumns] = useState({}); // destSheet -> [canonical]
   const [createStep, setCreateStep] = useState("upload"); // upload | map | done
   const [saving, setSaving] = useState(false);
   
@@ -200,14 +201,23 @@ export default function SchemaManager() {
   const [magicFeedback, setMagicFeedback] = useState(null);
   const [virtualSearch, setVirtualSearch] = useState("");
   const [geminiApiKey, setGeminiApiKey] = useState(() => localStorage.getItem("gemini_api_key") || "");
+  const [hasServerApiKey, setHasServerApiKey] = useState(false);
   const [showMagicDropdown, setShowMagicDropdown] = useState(false);
   const [runningAiMatch, setRunningAiMatch] = useState(false);
+  const [aiMatchLoadingText, setAiMatchLoadingText] = useState("Matching...");
   const [targetSheet, setTargetSheet] = useState("");  // which target sheet to map to
   const [targetSheetOptions, setTargetSheetOptions] = useState([]);
   const [sheetTargetHeaders, setSheetTargetHeaders] = useState({}); // sheetName → [headers]
   const [showQuickLook, setShowQuickLook] = useState(false);
   const [quickLookData, setQuickLookData] = useState(null); // {headers, rows} for the target sheet
   const [loadingQuickLook, setLoadingQuickLook] = useState(false);
+  
+  // Mapping Redesign states
+  const [activeDestination, setActiveDestination] = useState(""); // "Payment Tracker" | "Master Data" | ...
+  const [dialogColumn, setDialogColumn] = useState(null); // which canonical column is being edited in the dialog
+  const [dialogTemp, setDialogTemp] = useState(null); // temporary mapping state while dialog is open
+  const [colFilter, setColFilter] = useState(""); // filter columns in the mapping view
+  const [statusFilter, setStatusFilter] = useState("all"); // "all" | "mapped" | "required" | "unmapped"
   
   // Cross-Mapping Matrix states
   const [showMatrix, setShowMatrix] = useState(false);
@@ -239,10 +249,8 @@ export default function SchemaManager() {
     const targetHeaders = sheetTargetHeaders[sheetName] || [];
     targetHeaders.forEach(h => fields.add(h));
     
-    // Fallback to global canonFields if no per-sheet headers found
-    if (targetHeaders.length === 0) {
-      canonFields.forEach(f => fields.add(f));
-    }
+    // Always include global canonical fields (not just as fallback)
+    canonFields.forEach(f => fields.add(f));
     
     return Array.from(fields);
   }, [schemas, canonFields, sheetTargetHeaders]);
@@ -263,6 +271,13 @@ export default function SchemaManager() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    fetch(`${API_BASE}/api/ai-status`)
+      .then(r => r.ok ? r.json() : { configured: false })
+      .then(d => setHasServerApiKey(d.configured))
+      .catch(() => {});
+  }, []);
 
   // Open Matrix View and fetch batch details
   const openMatrixView = async () => {
@@ -319,9 +334,13 @@ export default function SchemaManager() {
       .then(r => r.ok ? r.json() : { sheets: [] })
       .then(d => {
         setTargetSheetOptions(d.sheets || []);
-        if (d.sheets?.length > 0) setTargetSheet(d.sheets[0]);
+        if (d.sheets?.length > 0) {
+          setTargetSheet(d.sheets[0]);
+          if (!activeDestination) setActiveDestination(d.sheets[0]);
+        }
       })
       .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Load per-sheet headers from consolidated file
@@ -366,12 +385,17 @@ export default function SchemaManager() {
     setCreateName("");
     setCreateDisplay("");
     setCreatePattern("");
+    setCreateActive(true);
     setCreateMappings({});
     setCreateSumColumns({});
     setCreatePreviews({});
     setCreateStep("upload");
     setActiveSheetTab(0);
     setShowCreate(false);
+    setDialogColumn(null);
+    setDialogTemp(null);
+    setColFilter("");
+    if (targetSheetOptions.length > 0) setActiveDestination(targetSheetOptions[0]);
   };
 
   // Edit action - loads full schema into workspace
@@ -385,6 +409,7 @@ export default function SchemaManager() {
       setCreateName(schema.client_id || cid);
       setCreateDisplay(schema.client_display_name || schema.client_id || cid);
       setCreatePattern(schema.filename_pattern || `*${cid}*`);
+      setCreateActive(schema.active !== false);
       
       const sheetNames = Object.keys(schema.sheets || {});
       const sheets = sheetNames.map(name => {
@@ -396,19 +421,34 @@ export default function SchemaManager() {
         };
       });
       
+      // Build destination-keyed mappings
       const maps = {};
       const sums = {};
       sheetNames.forEach((name, si) => {
-        maps[si] = {};
-        sums[si] = schema.sheets[name]?.sum_columns || [];
+        maps[name] = maps[name] || {};
+        sums[name] = schema.sheets[name]?.sum_columns || [];
         (schema.sheets[name]?.columns || []).forEach(c => {
           const isVirtual = !c.synonyms || c.synonyms.length === 0;
           const srcCol = isVirtual ? "" : c.synonyms[0];
-          maps[si][c.canonical_name] = {
+          
+          // Determine mapping type from existing data
+          let mapping_type = "direct";
+          if (c.default_value === "__from_filename__") {
+            mapping_type = "filename";
+          } else if (c.copy_from_column && !srcCol) {
+            mapping_type = "derived";
+          } else if (!srcCol && c.default_value) {
+            mapping_type = "static";
+          }
+          
+          maps[name][c.canonical_name] = {
+            mapping_type,
+            source_sheet_idx: si,
             source_column: srcCol,
+            static_value: mapping_type === "static" ? String(c.default_value || '') : '',
             datatype: c.datatype || 'string',
             mandatory: c.mandatory || false,
-            default_value: c.default_value !== undefined ? String(c.default_value) : '',
+            default_value: c.default_value !== undefined && mapping_type !== "static" && mapping_type !== "filename" ? String(c.default_value) : '',
             copy_from_column: c.copy_from_column || '',
             validation_regex: c.validation_regex || '',
             validation_exceptions: c.validation_exceptions || [],
@@ -421,6 +461,7 @@ export default function SchemaManager() {
       setCreateSumColumns(sums);
       setCreateStep("map");
       setActiveSheetTab(0);
+      if (sheetNames.length > 0) setActiveDestination(sheetNames[0]);
       setShowCreate(true);
     } catch (e) { 
       alert(`Failed to load schema details: ${e.message}`); 
@@ -441,7 +482,6 @@ export default function SchemaManager() {
       
       const sheetNames = Object.keys(schema.sheets || {});
       const sheets = sheetNames.map(name => {
-        // Physical columns have configured Excel synonym variations
         const physical = (schema.sheets[name]?.columns || []).filter(c => c.synonyms && c.synonyms.length > 0);
         return {
           name,
@@ -452,16 +492,25 @@ export default function SchemaManager() {
       const maps = {};
       const sums = {};
       sheetNames.forEach((name, si) => {
-        maps[si] = {};
-        sums[si] = schema.sheets[name]?.sum_columns || [];
+        maps[name] = maps[name] || {};
+        sums[name] = schema.sheets[name]?.sum_columns || [];
         (schema.sheets[name]?.columns || []).forEach(c => {
           const isVirtual = !c.synonyms || c.synonyms.length === 0;
           const srcCol = isVirtual ? "" : c.synonyms[0];
-          maps[si][c.canonical_name] = {
+          
+          let mapping_type = "direct";
+          if (c.default_value === "__from_filename__") mapping_type = "filename";
+          else if (c.copy_from_column && !srcCol) mapping_type = "derived";
+          else if (!srcCol && c.default_value) mapping_type = "static";
+          
+          maps[name][c.canonical_name] = {
+            mapping_type,
+            source_sheet_idx: si,
             source_column: srcCol,
+            static_value: mapping_type === "static" ? String(c.default_value || '') : '',
             datatype: c.datatype || 'string',
             mandatory: c.mandatory || false,
-            default_value: c.default_value !== undefined ? String(c.default_value) : '',
+            default_value: c.default_value !== undefined && mapping_type !== "static" && mapping_type !== "filename" ? String(c.default_value) : '',
             copy_from_column: c.copy_from_column || '',
             validation_regex: c.validation_regex || '',
             validation_exceptions: c.validation_exceptions || [],
@@ -474,6 +523,7 @@ export default function SchemaManager() {
       setCreateSumColumns(sums);
       setCreateStep("map");
       setActiveSheetTab(0);
+      if (sheetNames.length > 0) setActiveDestination(sheetNames[0]);
       setShowCreate(true);
     } catch (e) { 
       alert(`Duplicate failed: ${e.message}`); 
@@ -505,30 +555,36 @@ export default function SchemaManager() {
   // One-click Auto align using fuzzy matching database
   const handleAutoAlign = () => {
     let matchedCount = 0;
-    let totalCols = 0;
 
     setCreateMappings(prev => {
       const maps = { ...prev };
-      createSheets.forEach((sh, si) => {
-        maps[si] = maps[si] || {};
-        const sheetCanonicals = getSheetCanonicals(sh.name);
+      // For each destination sheet, try to match canonicals against ALL source sheets
+      targetSheetOptions.forEach(destName => {
+        maps[destName] = maps[destName] || {};
+        const sheetCanonicals = getSheetCanonicals(destName);
         
         sheetCanonicals.forEach(canonCol => {
-          totalCols++;
-          const match = bestMatch(canonCol, sh.columns);
-          const existing = maps[si]?.[canonCol] || {};
+          const existing = maps[destName]?.[canonCol] || {};
+          // Try matching from each source sheet
+          let foundMatch = null;
+          let foundSheetIdx = 0;
+          for (let si = 0; si < createSheets.length; si++) {
+            const match = bestMatch(canonCol, createSheets[si].columns);
+            if (match) { foundMatch = match; foundSheetIdx = si; break; }
+          }
           
-          maps[si][canonCol] = {
-            source_column: match || existing.source_column || '',
+          maps[destName][canonCol] = {
+            mapping_type: foundMatch ? 'direct' : (existing.mapping_type || 'direct'),
+            source_sheet_idx: foundMatch ? foundSheetIdx : (existing.source_sheet_idx || 0),
+            source_column: foundMatch || existing.source_column || '',
+            static_value: existing.static_value || '',
             datatype: existing.datatype || guessType(canonCol),
             mandatory: existing.mandatory || false,
             default_value: existing.default_value || '',
             copy_from_column: existing.copy_from_column || ''
           };
           
-          if (match) {
-            matchedCount++;
-          }
+          if (foundMatch) matchedCount++;
         });
       });
       return maps;
@@ -541,65 +597,164 @@ export default function SchemaManager() {
     setTimeout(() => { setMagicFeedback(null); }, 4000);
   };
 
+  // Clear all mappings and properties in the active template builder
+  const handleResetMappings = () => {
+    if (!window.confirm("Are you sure you want to clear all configured column mappings for this template?")) return;
+    
+    setCreateMappings(prev => {
+      const maps = { ...prev };
+      targetSheetOptions.forEach(destName => {
+        maps[destName] = {};
+        const sheetCanonicals = getSheetCanonicals(destName);
+        sheetCanonicals.forEach(canonCol => {
+          maps[destName][canonCol] = {
+            mapping_type: 'direct',
+            source_sheet_idx: 0,
+            source_column: '',
+            static_value: '',
+            datatype: guessType(canonCol),
+            mandatory: false,
+            default_value: '',
+            copy_from_column: ''
+          };
+        });
+      });
+      return maps;
+    });
+    setMagicFeedback("🧹 All mappings cleared successfully!");
+    setTimeout(() => { setMagicFeedback(null); }, 4000);
+  };
+
   // One-click AI semantic auto-match using Google Gemini
   const handleAiAutoAlign = async () => {
-    if (!geminiApiKey.trim()) {
-      alert("Please enter a valid Gemini API Key from Google AI Studio first!");
+    if (!geminiApiKey.trim() && !hasServerApiKey) {
+      alert("Please enter a valid API Key (Gemini, Groq, or OpenRouter) first!");
       return;
     }
     
-    const sh = createSheets[activeSheetTab];
-    if (!sh) return;
+    // Gather ALL columns and previews from all source sheets
+    const allColumns = [];
+    const allPreviewRows = [];
+    createSheets.forEach((sh, si) => {
+      sh.columns.forEach(col => {
+        if (!allColumns.includes(col)) allColumns.push(col);
+      });
+      const maxRows = 20;
+      for (let r = 0; r < maxRows; r++) {
+        const row = {};
+        let hasData = false;
+        sh.columns.forEach(col => {
+          const val = createPreviews[si]?.[col]?.[r];
+          if (val !== undefined && val !== null && String(val).trim() !== '') {
+            row[col] = val;
+            hasData = true;
+          }
+        });
+        if (hasData) allPreviewRows.push(row);
+      }
+    });
     
     // Save key to localStorage
     localStorage.setItem("gemini_api_key", geminiApiKey.trim());
     
     setRunningAiMatch(true);
-    setMagicFeedback("✨ Sending columns & row data to Gemini AI model...");
-    
-    // Construct lightweight preview rows for AI
-    const previewRows = [];
-    const maxRows = 20;
-    for (let r = 0; r < maxRows; r++) {
-      const row = {};
-      let hasData = false;
-      sh.columns.forEach(col => {
-        const val = createPreviews[activeSheetTab]?.[col]?.[r];
-        if (val !== undefined && val !== null && String(val).trim() !== '') {
-          row[col] = val;
-          hasData = true;
-        }
-      });
-      if (hasData) previewRows.push(row);
-    }
+    setAiMatchLoadingText("Scanning Excel...");
+
+    const phrases = [
+      "Scanning Excel...",
+      "Analyzing columns...",
+      "Finding semantic matches...",
+      "Mapping fields...",
+      "Inferring data types...",
+      "Checking required fields...",
+      "Resolving fallbacks...",
+      "Applying alignment...",
+      "Applying final template..."
+    ];
+    let phraseIndex = 0;
+    const intervalId = setInterval(() => {
+      setAiMatchLoadingText(phrases[phraseIndex]);
+      phraseIndex = (phraseIndex + 1) % phrases.length;
+    }, 1000);
 
     try {
+      // Execute a single global multi-sheet AI mapping request
       const res = await fetch(`${API_BASE}/api/ai-auto-match`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          sheet_name: targetSheet || "Payment Tracker",
           filename: createFile?.name || "",
-          columns: sh.columns,
-          preview: previewRows,
+          columns: allColumns,
+          preview: allPreviewRows.slice(0, 10), // Latency optimization: limit preview to 10 rows
           api_key: geminiApiKey.trim()
         })
       });
-      
+
       if (!res.ok) {
         const err = await res.json();
         throw new Error(err.detail || `HTTP ${res.status}`);
       }
-      
+
       const data = await res.json();
       if (data.success) {
-        const aiMappings = data.mappings || {};
-        const aiRules = data.rules || {};
-        const targetHeaders = data.target_headers || [];
-        const matchedSheet = data.matched_sheet || targetSheet;
+        const sheetsData = data.sheets || {};
 
-        setMagicFeedback(`✨ Gemini mapped to "${matchedSheet}" successfully!`);
-        setShowMagicDropdown(false);
+        setCreateMappings(prev => {
+          const maps = { ...prev };
+          
+          Object.entries(sheetsData).forEach(([dest, destData]) => {
+            const aiMappings = destData.mappings || {};
+            const aiRules = destData.rules || {};
+            
+            maps[dest] = maps[dest] || {};
+            const sheetCanonicals = getSheetCanonicals(dest);
+            
+            sheetCanonicals.forEach(targetCol => {
+              const sourceCol = aiMappings[targetCol] || '';
+              const rule = aiRules[targetCol] || {};
+              
+              let foundIdx = 0;
+              if (sourceCol) {
+                for (let si = 0; si < createSheets.length; si++) {
+                  if (createSheets[si].columns.includes(sourceCol)) {
+                    foundIdx = si;
+                    break;
+                  }
+                }
+              }
+              
+              const existing = maps[dest][targetCol] || {};
+              
+              // Determine mapping type based on matching column, copy_from, or client static naming rules
+              let mappingType = 'direct';
+              if (sourceCol) {
+                mappingType = 'direct';
+              } else if (rule.copy_from_column) {
+                mappingType = 'derived';
+              } else if (rule.default_value && (targetCol.toLowerCase() === 'client' || targetCol.toLowerCase() === 'client name')) {
+                mappingType = 'static';
+              }
+              
+              maps[dest][targetCol] = {
+                ...existing,
+                mapping_type: mappingType,
+                source_sheet_idx: foundIdx,
+                source_column: sourceCol,
+                static_value: mappingType === 'static' ? rule.default_value : (existing.static_value || ''),
+                datatype: rule.datatype || existing.datatype || guessType(targetCol),
+                mandatory: rule.mandatory !== undefined ? rule.mandatory : (existing.mandatory || false),
+                default_value: rule.default_value || existing.default_value || '',
+                copy_from_column: rule.copy_from_column || existing.copy_from_column || '',
+                is_ai_matched: true
+              };
+            });
+          });
+          
+          return maps;
+        });
+
+        const matchedNames = Object.keys(sheetsData).join(" & ");
+        setMagicFeedback(`✨ Gemini successfully auto-mapped ${matchedNames}!`);
       } else {
         throw new Error("API responded with success: false");
       }
@@ -607,7 +762,9 @@ export default function SchemaManager() {
       alert(`Gemini AI alignment failed: ${err.message}`);
       setMagicFeedback("❌ AI Mapping failed");
     } finally {
+      clearInterval(intervalId);
       setRunningAiMatch(false);
+      setAiMatchLoadingText("Matching...");
       setTimeout(() => { setMagicFeedback(null); }, 4000);
     }
   };
@@ -630,23 +787,35 @@ export default function SchemaManager() {
       const data = await r.json();
       setCreateSheets(data.sheets || []);
       
-      const maps = {};
+      // Build previews indexed by source sheet
       const prevs = {};
-      const sums = {};
       (data.sheets || []).forEach((sh, si) => {
-        maps[si] = {};
         prevs[si] = {};
-        sums[si] = [];
-        
         sh.columns.forEach(col => {
           prevs[si][col] = (sh.preview || []).slice(0, 5).map(r => r[col]);
         });
-
-        const sheetCanonicals = getSheetCanonicals(sh.name);
+      });
+      
+      // Build destination-keyed mappings  
+      const maps = {};
+      const sums = {};
+      targetSheetOptions.forEach(destName => {
+        maps[destName] = {};
+        sums[destName] = [];
+        const sheetCanonicals = getSheetCanonicals(destName);
         sheetCanonicals.forEach(canonCol => {
-          const match = bestMatch(canonCol, sh.columns);
-          maps[si][canonCol] = {
-            source_column: match || '',
+          // Try fuzzy match across all source sheets
+          let foundMatch = null;
+          let foundSheetIdx = 0;
+          for (let si = 0; si < (data.sheets || []).length; si++) {
+            const match = bestMatch(canonCol, data.sheets[si].columns);
+            if (match) { foundMatch = match; foundSheetIdx = si; break; }
+          }
+          maps[destName][canonCol] = {
+            mapping_type: 'direct',
+            source_sheet_idx: foundSheetIdx,
+            source_column: foundMatch || '',
+            static_value: '',
             datatype: guessType(canonCol),
             mandatory: false,
             default_value: '',
@@ -654,6 +823,7 @@ export default function SchemaManager() {
           };
         });
       });
+      
       setCreateMappings(maps);
       setCreateSumColumns(sums);
       setCreatePreviews(prevs);
@@ -668,6 +838,7 @@ export default function SchemaManager() {
       }
       setCreateStep("map");
       setActiveSheetTab(0);
+      if (targetSheetOptions.length > 0) setActiveDestination(targetSheetOptions[0]);
     } catch (err) { 
       alert(`Excel Analysis failed: ${err.message}`); 
     }
@@ -695,23 +866,33 @@ export default function SchemaManager() {
       const prevs = {};
       
       (data.sheets || []).forEach((sh, si) => {
-        maps[si] = {};
-        sums[si] = createSumColumns[si] || [];
         prevs[si] = {};
-        
         sh.columns.forEach(col => {
           prevs[si][col] = (sh.preview || []).slice(0, 5).map(r => r[col]);
         });
+      });
 
-        const sheetCanonicals = getSheetCanonicals(sh.name);
+      // Rebuild destination-keyed mappings, preserving old ones
+      targetSheetOptions.forEach(destName => {
+        maps[destName] = {};
+        sums[destName] = createSumColumns[destName] || [];
+        const sheetCanonicals = getSheetCanonicals(destName);
         sheetCanonicals.forEach(canonCol => {
-          const existing = oldMaps[si]?.[canonCol];
+          const existing = oldMaps[destName]?.[canonCol];
           if (existing) {
-            maps[si][canonCol] = existing;
+            maps[destName][canonCol] = existing;
           } else {
-            const match = bestMatch(canonCol, sh.columns);
-            maps[si][canonCol] = {
-              source_column: match || '',
+            let foundMatch = null;
+            let foundSheetIdx = 0;
+            for (let si = 0; si < (data.sheets || []).length; si++) {
+              const match = bestMatch(canonCol, data.sheets[si].columns);
+              if (match) { foundMatch = match; foundSheetIdx = si; break; }
+            }
+            maps[destName][canonCol] = {
+              mapping_type: 'direct',
+              source_sheet_idx: foundSheetIdx,
+              source_column: foundMatch || '',
+              static_value: '',
               datatype: guessType(canonCol),
               mandatory: false,
               default_value: '',
@@ -730,52 +911,92 @@ export default function SchemaManager() {
     }
   };
 
-  // Update a column field property
-  const updateMapping = (si, col, field, val) => {
+  // Update a column field property (destination-keyed)
+  const updateMapping = (destSheet, col, field, val) => {
     setCreateMappings(prev => {
       const m = { ...prev };
-      if (!m[si]) m[si] = {};
-      m[si] = { ...m[si], [col]: { ...(m[si][col] || {}), [field]: val } };
+      if (!m[destSheet]) m[destSheet] = {};
+      m[destSheet] = { ...m[destSheet], [col]: { ...(m[destSheet][col] || {}), [field]: val } };
       return m;
     });
   };
 
-  // Auto Sum Toggles
-  const toggleSumColumn = (si, colCanonical) => {
+  // Auto Sum Toggles (destination-keyed)
+  const toggleSumColumn = (destSheet, colCanonical) => {
     setCreateSumColumns(prev => {
       const s = { ...prev };
-      const currentSums = s[si] || [];
+      const currentSums = s[destSheet] || [];
       if (currentSums.includes(colCanonical)) {
-        s[si] = currentSums.filter(c => c !== colCanonical);
+        s[destSheet] = currentSums.filter(c => c !== colCanonical);
       } else {
-        s[si] = [...currentSums, colCanonical];
+        s[destSheet] = [...currentSums, colCanonical];
       }
       return s;
     });
+  };
+
+  // Open mapping dialog for a specific column
+  const openMappingDialog = (cname) => {
+    const m = createMappings[activeDestination]?.[cname] || {};
+    setDialogColumn(cname);
+    setDialogTemp({
+      mapping_type: m.mapping_type || 'direct',
+      source_sheet_idx: m.source_sheet_idx || 0,
+      source_column: m.source_column || '',
+      static_value: m.static_value || '',
+      datatype: m.datatype || guessType(cname),
+      mandatory: m.mandatory || false,
+      default_value: m.default_value || '',
+      copy_from_column: m.copy_from_column || '',
+    });
+  };
+
+  // Save mapping dialog changes
+  const saveMappingDialog = () => {
+    if (!dialogColumn || !dialogTemp) return;
+    setCreateMappings(prev => {
+      const m = { ...prev };
+      if (!m[activeDestination]) m[activeDestination] = {};
+      m[activeDestination] = { ...m[activeDestination], [dialogColumn]: { ...dialogTemp } };
+      return m;
+    });
+    setDialogColumn(null);
+    setDialogTemp(null);
   };
 
   // Save full definition to database
   const handleSave = async () => {
     const cid = createName.trim();
     if (!cid) { alert("Please enter a unique template ID."); return; }
-    if (!createSheets.length) { alert("Please upload Excel sheets to parse."); return; }
+    if (!createSheets.length && Object.keys(createMappings).length === 0) { alert("Please upload Excel sheets to parse."); return; }
     setSaving(true);
     
-    const sheetData = createSheets.map((sh, si) => {
-      // Get all standard canonicals for this sheet, sorted in proper sequence
-      const sheetCanonicals = sortCanonicalsBySequence(getSheetCanonicals(sh.name));
+    // Build sheet data from destination-keyed mappings
+    const destSheetNames = targetSheetOptions.length > 0 
+      ? targetSheetOptions 
+      : Object.keys(createMappings);
+    
+    const sheetData = destSheetNames.map(destName => {
+      const sheetCanonicals = sortCanonicalsBySequence(getSheetCanonicals(destName));
+      const destMappings = createMappings[destName] || {};
 
       const cols = sheetCanonicals.map(cname => {
-        const m = createMappings[si]?.[cname] || {};
-        let srcCol = m.source_column || "";
+        const m = destMappings[cname] || {};
         const entry = {
           canonical_name: cname,
           datatype: m.datatype || 'string',
           synonyms: []
         };
-        if (srcCol === "__filename__") {
+        
+        if (m.mapping_type === 'filename') {
           entry.default_value = "__from_filename__";
+        } else if (m.mapping_type === 'static') {
+          entry.default_value = m.static_value || '';
+        } else if (m.mapping_type === 'derived') {
+          if (m.copy_from_column) entry.copy_from_column = m.copy_from_column;
         } else {
+          // direct mapping
+          const srcCol = m.source_column || "";
           if (srcCol) {
             entry.synonyms = [srcCol];
             if (cname.toLowerCase() !== srcCol.toLowerCase()) {
@@ -785,29 +1006,22 @@ export default function SchemaManager() {
           if (m.default_value !== undefined && String(m.default_value).trim() !== '') {
             entry.default_value = m.default_value;
           }
+          if (m.copy_from_column && m.copy_from_column !== '') {
+            entry.copy_from_column = m.copy_from_column;
+          }
         }
-        if (m.mandatory) {
-          entry.mandatory = true;
-        }
-        if (m.copy_from_column && m.copy_from_column !== '') {
-          entry.copy_from_column = m.copy_from_column;
-        }
+        
+        if (m.mandatory) entry.mandatory = true;
         // Restore preserved regex, exceptions, and header_name
-        if (m.validation_regex) {
-          entry.validation_regex = m.validation_regex;
-        }
-        if (m.validation_exceptions && m.validation_exceptions.length > 0) {
-          entry.validation_exceptions = m.validation_exceptions;
-        }
-        if (m.header_name) {
-          entry.header_name = m.header_name;
-        }
+        if (m.validation_regex) entry.validation_regex = m.validation_regex;
+        if (m.validation_exceptions && m.validation_exceptions.length > 0) entry.validation_exceptions = m.validation_exceptions;
+        if (m.header_name) entry.header_name = m.header_name;
         return entry;
       });
       
-      const sumCols = createSumColumns[si] || [];
+      const sumCols = createSumColumns[destName] || [];
       return { 
-        name: sh.name, 
+        name: destName, 
         header_row: 1, 
         data_start_row: 2, 
         columns: cols,
@@ -821,7 +1035,7 @@ export default function SchemaManager() {
           client_id: cid,
           client_display_name: createDisplay.trim() || cid,
           filename_pattern: createPattern.trim() || `*${cid}*`,
-          active: true,
+          active: createActive,
         };
         if (editingId) {
           const sheetsObj = {};
@@ -1384,7 +1598,7 @@ export default function SchemaManager() {
             </div>
           )}
 
-          {/* BUILDER WORKSPACE STEP 2: MAJESTIC MAPPING GRID */}
+          {/* BUILDER WORKSPACE STEP 2: REDESIGNED MAPPING EXPERIENCE */}
           {createStep === "map" && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
               
@@ -1401,9 +1615,16 @@ export default function SchemaManager() {
                 </div>
                 <input ref={replaceRef} type="file" style={{ display: 'none' }}
                   accept=".xlsx,.xls" onChange={handleReplaceExcel} />
-                <button className="btn-sm btn-secondary" onClick={() => replaceRef.current?.click()} style={{ padding: '4px 10px', fontSize: '0.72rem' }}>
-                  Choose file...
-                </button>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  {createSheets.length > 0 && (
+                    <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>
+                      {createSheets.length} sheet{createSheets.length > 1 ? 's' : ''}: {createSheets.map(s => `"${s.name}"`).join(', ')}
+                    </span>
+                  )}
+                  <button className="btn-sm btn-secondary" onClick={() => replaceRef.current?.click()} style={{ padding: '4px 10px', fontSize: '0.72rem' }}>
+                    Choose file...
+                  </button>
+                </div>
               </div>
 
               {/* Main Definitions Form Block */}
@@ -1435,33 +1656,15 @@ export default function SchemaManager() {
               </div>
 
               {/* Column Mapping Section */}
-              <div className="panel" style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: 0 }}>
+              <div className="panel" style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: 0 }}>
                 
+                {/* Section Header with Actions */}
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid rgba(255,255,255,0.03)', paddingBottom: '6px' }}>
                   <h3 className="modal-section-header" style={{ fontSize: '0.8rem', margin: 0 }}>
                     <span className="step-badge">2</span> Column Mapping
                   </h3>
                   
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', position: 'relative' }}>
-                    <button className="btn-sm"
-                      onClick={() => {
-                        const next = !showQuickLook;
-                        setShowQuickLook(next);
-                        if (next) {
-                          setLoadingQuickLook(true);
-                          const sh = createSheets[activeSheetTab];
-                          const target = targetSheetOptions.includes(sh?.name) ? sh.name : (targetSheetOptions[0] || "Payment Tracker");
-                          fetch(`${API_BASE}/api/consolidated-preview?sheet_name=${encodeURIComponent(target)}`)
-                            .then(r => r.ok ? r.json() : { headers: [], rows: [] })
-                            .then(d => setQuickLookData(d))
-                            .catch(() => {})
-                            .finally(() => setLoadingQuickLook(false));
-                        }
-                      }}
-                      style={{ fontSize: '0.7rem', padding: '2px 8px', display: 'flex', alignItems: 'center', gap: '3px', background: 'rgba(99,102,241,0.08)', border: '1px solid rgba(99,102,241,0.2)', color: 'var(--accent-indigo)' }}
-                      title="Preview actual data from source and target files side-by-side">
-                      <span>👁</span> Quick Look
-                    </button>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                     {magicFeedback && (
                       <span style={{
                         fontSize: '0.72rem',
@@ -1475,16 +1678,15 @@ export default function SchemaManager() {
                         {magicFeedback}
                       </span>
                     )}
-                    {/* Single Auto-Match Button */}
                     <button className="btn-sm btn-sm-copy"
                       onClick={async () => {
                         const savedKey = localStorage.getItem("gemini_api_key");
-                        if (savedKey && savedKey.trim().length > 10) {
-                          setGeminiApiKey(savedKey);
+                        if ((savedKey && savedKey.trim().length > 10) || hasServerApiKey) {
+                          if (savedKey) setGeminiApiKey(savedKey);
                           await handleAiAutoAlign();
                         } else {
                           handleAutoAlign();
-                          const key = prompt("Enter your free Gemini API Key from https://aistudio.google.com/apikey for AI-powered matching (or leave blank to keep fuzzy match):");
+                          const key = prompt("Enter your free API Key for AI-powered matching (or leave blank to keep fuzzy match):\n\n• Google Gemini starts with 'AIzaSy...'\n• Groq starts with 'gsk_...'\n• OpenRouter starts with 'sk-or-...'");
                           if (key && key.trim().length > 10) {
                             setGeminiApiKey(key.trim());
                             localStorage.setItem("gemini_api_key", key.trim());
@@ -1492,228 +1694,252 @@ export default function SchemaManager() {
                           }
                         }
                       }}
+                      disabled={runningAiMatch}
                       style={{ fontSize: '0.72rem', padding: '4px 10px', display: 'flex', alignItems: 'center', gap: '6px', border: '1px solid rgba(16,185,129,0.3)', background: 'rgba(16,185,129,0.08)', color: 'var(--accent-success)' }}
                       title="Automatically match columns using AI (Gemini) or fuzzy matching.">
-                      <span>✨ Auto-Match</span>
+                      {runningAiMatch ? <><span className="spinner" style={{ width: 10, height: 10 }} /> {aiMatchLoadingText}</> : <span>✨ Auto-Match</span>}
+                    </button>
+                    <button className="btn-sm btn-danger"
+                      onClick={handleResetMappings}
+                      style={{ fontSize: '0.72rem', padding: '4px 10px', display: 'flex', alignItems: 'center', gap: '6px', width: 'auto' }}
+                      title="Clear all mappings and start fresh.">
+                      <span>🧹 Reset Mappings</span>
                     </button>
                   </div>
                 </div>
 
-                {/* Quick Look Panel */}
-                {showQuickLook && (
-                  <div className="panel" style={{ padding: '0', marginBottom: '4px', border: '1px solid rgba(99,102,241,0.15)', background: 'rgba(99,102,241,0.01)' }}>
-                    <div style={{ display: 'flex', borderBottom: '1px solid rgba(99,102,241,0.1)', padding: '4px 10px', fontSize: '0.7rem', fontWeight: 600, color: 'var(--accent-indigo)' }}>
-                      <span style={{ flex: 1 }}>📂 {createSheets[activeSheetTab]?.name || '—'}</span>
-                      <span style={{ flex: 1 }}>🎯 {targetSheetOptions.includes(createSheets[activeSheetTab]?.name) ? createSheets[activeSheetTab]?.name : (targetSheetOptions[0] || '—')}</span>
-                    </div>
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0', maxHeight: '200px', overflow: 'auto', fontSize: '0.65rem' }}>
-                      <div style={{ overflowX: 'auto', borderRight: '1px solid rgba(255,255,255,0.05)' }}>
-                        {(() => {
-                          const sh = createSheets[activeSheetTab];
-                          if (!sh) return <div style={{ padding: '8px', color: 'var(--text-muted)' }}>No source data</div>;
-                          const cols = [...new Set(sh.columns)];
-                          return (
-                            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                              <thead>
-                                <tr>
-                                  <th style={{ position: 'sticky', top: 0, background: 'var(--panel-bg)', padding: '2px 4px', borderBottom: '1px solid var(--border-color)', textAlign: 'left', fontWeight: 600, fontSize: '0.6rem', color: 'var(--text-muted)' }}>#</th>
-                                  {cols.slice(0, 25).map(c => (
-                                    <th key={c} style={{ position: 'sticky', top: 0, background: 'var(--panel-bg)', padding: '2px 4px', borderBottom: '1px solid var(--border-color)', textAlign: 'left', fontWeight: 600, fontSize: '0.6rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{c}</th>
-                                  ))}
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {Array.from({ length: 5 }).map((_, ri) => (
-                                  <tr key={ri}>
-                                    <td style={{ padding: '1px 4px', borderBottom: '1px solid rgba(255,255,255,0.03)', color: 'var(--text-muted)', fontSize: '0.6rem' }}>{ri + 1}</td>
-                                    {cols.slice(0, 25).map(c => {
-                                      const v = createPreviews[activeSheetTab]?.[c]?.[ri];
-                                      return <td key={c} style={{ padding: '1px 4px', borderBottom: '1px solid rgba(255,255,255,0.03)', whiteSpace: 'nowrap', maxWidth: '100px', overflow: 'hidden', textOverflow: 'ellipsis' }}>{v !== undefined && v !== null && String(v).trim() !== '' ? String(v).slice(0, 24) : '—'}</td>;
-                                    })}
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                          );
-                        })()}
-                      </div>
-                      <div style={{ overflowX: 'auto' }}>
-                        {loadingQuickLook ? (
-                          <div style={{ padding: '8px', color: 'var(--text-muted)' }}>Loading...</div>
-                        ) : quickLookData?.headers?.length > 0 ? (
-                          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                            <thead>
-                              <tr>
-                                <th style={{ position: 'sticky', top: 0, background: 'var(--panel-bg)', padding: '2px 4px', borderBottom: '1px solid var(--border-color)', textAlign: 'left', fontWeight: 600, fontSize: '0.6rem', color: 'var(--text-muted)' }}>#</th>
-                                {quickLookData.headers.slice(0, 25).map(h => (
-                                  <th key={h} style={{ position: 'sticky', top: 0, background: 'var(--panel-bg)', padding: '2px 4px', borderBottom: '1px solid var(--border-color)', textAlign: 'left', fontWeight: 600, fontSize: '0.6rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{h}</th>
-                                ))}
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {quickLookData.rows.slice(0, 5).map((row, ri) => (
-                                <tr key={ri}>
-                                  <td style={{ padding: '1px 4px', borderBottom: '1px solid rgba(255,255,255,0.03)', color: 'var(--text-muted)', fontSize: '0.6rem' }}>{ri + 1}</td>
-                                  {quickLookData.headers.slice(0, 25).map(h => {
-                                    const v = row[h];
-                                    return <td key={h} style={{ padding: '1px 4px', borderBottom: '1px solid rgba(255,255,255,0.03)', whiteSpace: 'nowrap', maxWidth: '100px', overflow: 'hidden', textOverflow: 'ellipsis' }}>{v !== undefined && v !== null && String(v).trim() !== '' ? String(v).slice(0, 24) : '—'}</td>;
-                                  })}
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        ) : (
-                          <div style={{ padding: '8px', color: 'var(--text-muted)' }}>No target data</div>
-                        )}
-                      </div>
-                    </div>
+                {/* Destination Context Tabs */}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px' }}>
+                  <div className="dest-tabs">
+                    {targetSheetOptions.map(destName => {
+                      const destMappings = createMappings[destName] || {};
+                      const total = Object.keys(destMappings).length;
+                      const mapped = Object.values(destMappings).filter(m => m.source_column || m.static_value || m.mapping_type === 'filename' || (m.mapping_type === 'derived' && m.copy_from_column)).length;
+                      return (
+                        <div key={destName}
+                          className={`dest-tab ${activeDestination === destName ? 'active' : ''}`}
+                          onClick={() => { setActiveDestination(destName); setColFilter(''); setStatusFilter('all'); }}>
+                          <span>{destName === 'Payment Tracker' ? '💰' : '📊'}</span>
+                          <span>{destName}</span>
+                          <span className="dest-tab-count">{mapped}/{total}</span>
+                        </div>
+                      );
+                    })}
                   </div>
-                )}
-
-                {/* Multiple worksheets tab selectors */}
-                  {createSheets.length > 1 && (
-                    <div className="map-sheet-tabs" style={{ marginBottom: '2px' }}>
-                      {createSheets.map((sh, idx) => (
-                        <div key={idx}
-                          className={`sheet-tab ${idx === activeSheetTab ? 'active' : ''}`}
-                          onClick={() => setActiveSheetTab(idx)}
-                          style={{ fontSize: '0.75rem', padding: '4px 12px' }}>
-                        📊 Worksheet: "{sh.name}" <span style={{ opacity: 0.7, marginLeft: '4px' }}>({[...new Set(sh.columns)].length} columns)</span>
-                      </div>
-                    ))}
+                  
+                  {/* Column Filter */}
+                  <div style={{ position: 'relative' }}>
+                    <span style={{ position: 'absolute', left: '8px', top: '50%', transform: 'translateY(-50%)', fontSize: '0.7rem', color: 'var(--text-muted)' }}>🔍</span>
+                    <input 
+                      className="col-filter-input"
+                      placeholder="Filter columns..."
+                      value={colFilter}
+                      onChange={e => setColFilter(e.target.value)} />
                   </div>
-                )}
+                </div>
 
-                {/* Column Map Row Cards */}
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                {/* Mapping Progress Bar */}
+                {(() => {
+                  const progressItems = targetSheetOptions.map(destName => {
+                    const destMappings = createMappings[destName] || {};
+                    const total = Object.keys(destMappings).length;
+                    const mapped = Object.values(destMappings).filter(m => m.source_column || m.static_value || m.mapping_type === 'filename' || (m.mapping_type === 'derived' && m.copy_from_column)).length;
+                    const pct = total > 0 ? Math.round((mapped / total) * 100) : 0;
+                    return { destName, total, mapped, pct };
+                  });
+                  return (
+                    <div className="mapping-progress-wrap">
+                      {progressItems.map(p => (
+                        <div key={p.destName} className="mapping-progress-item">
+                          <div className="mapping-progress-label">
+                            <span>{p.destName}</span>
+                            <span className="prog-count">{p.mapped}/{p.total} ({p.pct}%)</span>
+                          </div>
+                          <div className="mapping-progress-bar">
+                            <div className={`mapping-progress-fill ${p.pct === 100 ? 'complete' : ''}`} style={{ width: `${p.pct}%` }} />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })()}
+
+                {/* Status Filters Bar */}
+                {(() => {
+                  const destMappings = createMappings[activeDestination] || {};
+                  const sheetCanonicals = getSheetCanonicals(activeDestination);
+                  
+                  let totalCount = sheetCanonicals.length;
+                  let mappedCount = 0;
+                  let requiredCount = 0;
+                  let optionalCount = 0;
+                  
+                  sheetCanonicals.forEach(cname => {
+                    const m = destMappings[cname] || {};
+                    const isMapped = !!(m.source_column || m.static_value || m.mapping_type === 'filename' || (m.mapping_type === 'derived' && m.copy_from_column));
+                    const isMandatory = m.mandatory || false;
+                    
+                    if (isMapped) mappedCount++;
+                    else if (isMandatory) requiredCount++;
+                    else optionalCount++;
+                  });
+
+                  return (
+                    <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '4px', background: 'rgba(0,0,0,0.15)', padding: '6px 12px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.03)' }}>
+                      {[
+                        { id: 'all', label: 'All Columns', color: 'var(--text-primary)', count: totalCount },
+                        { id: 'mapped', label: '🟢 Mapped', color: 'var(--accent-success)', count: mappedCount },
+                        { id: 'required', label: '🔴 Required Unmapped', color: 'var(--accent-error)', count: requiredCount },
+                        { id: 'unmapped', label: '⬜ Optional Unmapped', color: 'var(--text-muted)', count: optionalCount }
+                      ].map(filter => (
+                        <button key={filter.id}
+                          onClick={() => setStatusFilter(filter.id)}
+                          style={{
+                            background: statusFilter === filter.id ? 'rgba(99,102,241,0.15)' : 'transparent',
+                            border: '1px solid',
+                            borderColor: statusFilter === filter.id ? 'var(--accent-indigo)' : 'transparent',
+                            color: statusFilter === filter.id ? '#fff' : 'var(--text-muted)',
+                            padding: '3px 12px',
+                            fontSize: '0.72rem',
+                            fontWeight: 600,
+                            borderRadius: '16px',
+                            cursor: 'pointer',
+                            transition: 'all 0.15s ease',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '4px'
+                          }}
+                          onMouseEnter={e => { if (statusFilter !== filter.id) e.target.style.background = 'rgba(255,255,255,0.03)'; }}
+                          onMouseLeave={e => { if (statusFilter !== filter.id) e.target.style.background = 'transparent'; }}>
+                          <span style={{ color: filter.color }}>{filter.label}</span>
+                          <span style={{ 
+                            fontSize: '0.65rem', 
+                            padding: '1px 5px', 
+                            borderRadius: '4px', 
+                            background: statusFilter === filter.id ? 'rgba(99,102,241,0.25)' : 'rgba(255,255,255,0.05)',
+                            color: statusFilter === filter.id ? '#fff' : 'var(--text-muted)'
+                          }}>{filter.count}</span>
+                        </button>
+                      ))}
+                    </div>
+                  );
+                })()}
+
+                {/* Mapping Cards Grid */}
+                <div className="mapping-cards-grid">
                   {(() => {
-                    const sh = createSheets[activeSheetTab];
-                    if (!sh) return null;
+                    const destMappings = createMappings[activeDestination] || {};
+                    const sheetCanonicals = sortCanonicalsBySequence(getSheetCanonicals(activeDestination));
+                    const filterLower = colFilter.toLowerCase().trim();
+                    const filtered = sheetCanonicals.filter(cname => {
+                      const m = destMappings[cname] || {};
+                      const isMapped = !!(m.source_column || m.static_value || m.mapping_type === 'filename' || (m.mapping_type === 'derived' && m.copy_from_column));
+                      const isMandatory = m.mandatory || false;
+                      
+                      const matchesSearch = cname.toLowerCase().includes(filterLower);
+                      let matchesStatus = true;
+                      if (statusFilter === 'mapped') matchesStatus = isMapped;
+                      else if (statusFilter === 'required') matchesStatus = (!isMapped && isMandatory);
+                      else if (statusFilter === 'unmapped') matchesStatus = (!isMapped && !isMandatory);
+                      
+                      return matchesSearch && matchesStatus;
+                    });
 
-                    const sheetCanonicals = sortCanonicalsBySequence(getSheetCanonicals(sh.name));
+                    if (filtered.length === 0) {
+                      return (
+                        <div style={{ padding: '24px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.82rem', gridColumn: '1 / -1' }}>
+                          No columns match your search and status filters.
+                        </div>
+                      );
+                    }
 
-                    return sheetCanonicals.map(cname => {
-                      const m = createMappings[activeSheetTab]?.[cname] || {};
+                    return filtered.map(cname => {
+                      const m = destMappings[cname] || {};
+                      const isMapped = !!(m.source_column || m.static_value || m.mapping_type === 'filename' || (m.mapping_type === 'derived' && m.copy_from_column));
+                      const hasDefault = !!(m.default_value && String(m.default_value).trim());
                       const isMandatory = m.mandatory || false;
                       const isNum = m.datatype === 'integer' || m.datatype === 'decimal';
-                      const isSumChecked = (createSumColumns[activeSheetTab] || []).includes(cname);
-                      
-                      const sourceColSelected = m.source_column || "";
-                      const samples = sourceColSelected ? (createPreviews[activeSheetTab]?.[sourceColSelected] || []) : [];
+                      const isSumChecked = (createSumColumns[activeDestination] || []).includes(cname);
 
-                      const showAdvanced = expandedCanonicals.has(cname);
-                      const toggleAdvanced = () => {
-                        setExpandedCanonicals(prev => {
-                          const next = new Set(prev);
-                          if (next.has(cname)) next.delete(cname);
-                          else next.add(cname);
-                          return next;
-                        });
-                      };
+                      // Status
+                      let statusClass = 'status-unmapped';
+                      let dotClass = 'gray';
+                      if (isMapped) { statusClass = 'status-mapped'; dotClass = 'green'; }
+                      else if (hasDefault) { statusClass = 'status-default-only'; dotClass = 'yellow'; }
+                      else if (isMandatory) { statusClass = 'status-required-unmapped'; dotClass = 'red'; }
+
+                      // Mapping description
+                      let mappingDesc = '— Not configured';
+                      let mappingTypeBadge = '';
+                      if (m.mapping_type === 'direct' && m.source_column) {
+                        const shName = createSheets[m.source_sheet_idx || 0]?.name || '';
+                        mappingDesc = `${shName ? shName + ' → ' : ''}${m.source_column}`;
+                        mappingTypeBadge = 'direct';
+                      } else if (m.mapping_type === 'static' && m.static_value) {
+                        mappingDesc = `"${m.static_value}"`;
+                        mappingTypeBadge = 'static';
+                      } else if (m.mapping_type === 'filename') {
+                        mappingDesc = 'Extract from filename';
+                        mappingTypeBadge = 'filename';
+                      } else if (m.mapping_type === 'derived' && m.copy_from_column) {
+                        mappingDesc = `Copy from "${m.copy_from_column}"`;
+                        mappingTypeBadge = 'derived';
+                      }
+
+                      // Preview samples
+                      const samples = (m.mapping_type === 'direct' && m.source_column) 
+                        ? (createPreviews[m.source_sheet_idx || 0]?.[m.source_column] || []).slice(0, 3)
+                        : [];
 
                       return (
-                        <div key={cname} className="panel col-mapping-card"
-                          style={{ 
-                            padding: '6px 10px', 
-                            marginBottom: 0, 
-                            background: sourceColSelected ? 'rgba(16,185,129,0.005)' : 'rgba(255,255,255,0.005)',
-                            border: sourceColSelected ? '1px solid rgba(16,185,129,0.2)' : '1px dashed rgba(255,255,255,0.1)',
-                          }}>
-                          
-                          {/* Simple 2-col row: Target ↔ Source */}
-                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr auto', gap: '8px', alignItems: 'center' }}>
-                            
-                            {/* Target Column Name */}
-                            <div>
-                              <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                                <code style={{ fontSize: '0.72rem', color: sourceColSelected ? 'var(--accent-success)' : 'var(--text-muted)', background: sourceColSelected ? 'rgba(16,185,129,0.08)' : 'rgba(255,255,255,0.04)', border: sourceColSelected ? '1px solid rgba(16,185,129,0.2)' : '1px dashed rgba(255,255,255,0.08)', padding: '1px 6px', borderRadius: '3px', fontWeight: 600 }}>
-                                  {cname}
-                                </code>
-                                {isMandatory && <span title="Required" style={{ color: 'var(--accent-error)', fontSize: '0.68rem' }}>★</span>}
+                        <div key={cname} className={`mapping-card ${statusClass}`}
+                          onClick={() => openMappingDialog(cname)}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <div className={`mapping-card-status-dot ${dotClass}`} />
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                <code style={{ fontSize: '0.74rem', fontWeight: 700, color: isMapped ? '#fff' : 'var(--text-secondary)' }}>{cname}</code>
+                                {isMandatory && <span style={{ color: 'var(--accent-error)', fontSize: '0.65rem', fontWeight: 800 }}>★ Required</span>}
+                                {isNum && isSumChecked && <span style={{ color: 'var(--accent-cyan)', fontSize: '0.6rem', fontWeight: 800 }}>Σ</span>}
+                                {mappingTypeBadge && <span className={`mapping-type-badge ${mappingTypeBadge}`}>{mappingTypeBadge}</span>}
+                                {m.is_ai_matched && (
+                                  <span style={{ 
+                                    background: 'rgba(139, 92, 246, 0.12)', 
+                                    color: '#c084fc', 
+                                    border: '1px solid rgba(139, 92, 246, 0.25)', 
+                                    fontSize: '0.62rem', 
+                                    fontWeight: 700, 
+                                    padding: '1px 6px', 
+                                    borderRadius: '4px',
+                                    textTransform: 'uppercase',
+                                    boxShadow: '0 0 10px rgba(139, 92, 246, 0.15)'
+                                  }}>✨ AI</span>
+                                )}
+                                <span style={{ fontSize: '0.62rem', color: 'var(--text-muted)', marginLeft: 'auto', textTransform: 'capitalize' }}>{m.datatype || 'string'}</span>
+                              </div>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '2px' }}>
+                                <span style={{ fontSize: '0.68rem', color: isMapped ? 'var(--text-secondary)' : 'var(--text-muted)', fontStyle: isMapped ? 'normal' : 'italic' }}>
+                                  {mappingDesc}
+                                </span>
+                                {samples.length > 0 && (
+                                  <div style={{ display: 'flex', gap: '3px', marginLeft: '8px' }}>
+                                    {samples.map((v, vi) => (
+                                      <span key={vi} className="dialog-preview-chip">
+                                        {v !== null && v !== undefined && String(v).trim() !== '' ? String(v).slice(0, 16) : '—'}
+                                      </span>
+                                    ))}
+                                  </div>
+                                )}
                               </div>
                             </div>
-
-                            {/* Source Column Dropdown */}
-                            <div>
-                              <select value={sourceColSelected}
-                                onChange={e => updateMapping(activeSheetTab, cname, 'source_column', e.target.value)}
-                                style={{ 
-                                  padding: '2px 6px', 
-                                  background: 'rgba(0,0,0,0.2)', 
-                                  border: sourceColSelected ? '1px solid rgba(16,185,129,0.35)' : '1px solid var(--border-color)', 
-                                  borderRadius: '3px', 
-                                  color: sourceColSelected ? '#fff' : 'var(--text-muted)', 
-                                  fontSize: '0.72rem', 
-                                  width: '100%',
-                                  fontStyle: sourceColSelected ? 'normal' : 'italic'
-                                }}>
-                                <option value="">(none — missing in file)</option>
-                                <option value="__filename__">📄 Use filename</option>
-                                {[...new Set(sh.columns)].map(c => <option key={c} value={c}>{c}</option>)}
-                              </select>
-                              {samples.length > 0 && (
-                                <div style={{ display: 'flex', gap: '3px', marginTop: '2px', flexWrap: 'wrap' }}>
-                                  {samples.slice(0, 5).map((v, vi) => (
-                                    <span key={vi} style={{ fontSize: '0.6rem', background: 'rgba(255,255,255,0.04)', padding: '0 4px', borderRadius: '2px', color: 'var(--text-muted)' }}>
-                                      {v !== null && v !== undefined && String(v).trim() !== '' ? String(v).slice(0, 20) : '—'}
-                                    </span>
-                                  ))}
-                                </div>
-                              )}
-                            </div>
-
-                            {/* Advanced toggle */}
-                            <button onClick={toggleAdvanced}
-                              style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: '0.65rem', padding: '1px 6px', whiteSpace: 'nowrap' }}>
-                              {showAdvanced ? '▲' : '⚙️'} 
+                            <button
+                              onClick={(e) => { e.stopPropagation(); openMappingDialog(cname); }}
+                              style={{ background: 'none', border: '1px solid rgba(255,255,255,0.08)', color: 'var(--text-muted)', cursor: 'pointer', fontSize: '0.68rem', padding: '3px 8px', borderRadius: '4px', whiteSpace: 'nowrap', transition: 'all 0.15s ease' }}
+                              onMouseEnter={e => { e.target.style.borderColor = 'rgba(99,102,241,0.3)'; e.target.style.color = '#fff'; }}
+                              onMouseLeave={e => { e.target.style.borderColor = 'rgba(255,255,255,0.08)'; e.target.style.color = 'var(--text-muted)'; }}>
+                              Configure ▸
                             </button>
-
                           </div>
-
-                          {/* Advanced Settings (collapsible) */}
-                          {showAdvanced && (
-                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 0.5fr 0.5fr', gap: '8px', marginTop: '6px', padding: '6px 8px', background: 'rgba(0,0,0,0.12)', borderRadius: '4px' }}>
-                              <div>
-                                <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)', display: 'block', marginBottom: '1px' }}>Data Type</span>
-                                <select value={m.datatype || 'string'}
-                                  onChange={e => updateMapping(activeSheetTab, cname, 'datatype', e.target.value)}
-                                  style={{ padding: '2px 4px', fontSize: '0.68rem', background: 'rgba(0,0,0,0.2)', border: '1px solid var(--border-color)', borderRadius: '3px', color: 'var(--text-primary)', width: '100%' }}>
-                                  <option value="string">Text</option>
-                                  <option value="integer">Number</option>
-                                  <option value="decimal">Decimal</option>
-                                  <option value="date">Date</option>
-                                </select>
-                              </div>
-                              <div>
-                                <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)', display: 'block', marginBottom: '1px' }}>Default</span>
-                                <input value={m.default_value !== undefined ? String(m.default_value) : ''}
-                                  onChange={e => updateMapping(activeSheetTab, cname, 'default_value', e.target.value)}
-                                  placeholder="(none)" style={{ padding: '2px 6px', fontSize: '0.68rem', background: 'rgba(0,0,0,0.2)', border: '1px solid var(--border-color)', borderRadius: '3px', color: '#fff', width: '100%' }} />
-                              </div>
-                              <div>
-                                <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)', display: 'block', marginBottom: '1px' }}>Copy From</span>
-                                <select value={m.copy_from_column || ''}
-                                  onChange={e => updateMapping(activeSheetTab, cname, 'copy_from_column', e.target.value)}
-                                  style={{ padding: '2px 4px', fontSize: '0.68rem', background: 'rgba(0,0,0,0.2)', border: '1px solid var(--border-color)', borderRadius: '3px', color: 'var(--text-primary)', width: '100%' }}>
-                                  <option value="">(none)</option>
-                                  {sheetCanonicals.filter(c => c !== cname).map(c => <option key={c} value={c}>{c}</option>)}
-                                </select>
-                              </div>
-                              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
-                                <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)', marginBottom: '1px' }}>Required</span>
-                                <input type="checkbox" checked={isMandatory}
-                                  onChange={e => updateMapping(activeSheetTab, cname, 'mandatory', e.target.checked)}
-                                  style={{ width: '12px', height: '12px', cursor: 'pointer' }} />
-                              </div>
-                              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', opacity: isNum ? 1 : 0.4 }}>
-                                <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)', marginBottom: '1px' }}>AutoSum</span>
-                                <input type="checkbox" disabled={!isNum} checked={isSumChecked}
-                                  onChange={() => toggleSumColumn(activeSheetTab, cname)}
-                                  style={{ width: '12px', height: '12px', cursor: isNum ? 'pointer' : 'not-allowed' }} />
-                              </div>
-                            </div>
-                          )}
-
                         </div>
                       );
                     });
@@ -1730,6 +1956,211 @@ export default function SchemaManager() {
                 </button>
               </div>
 
+            </div>
+          )}
+
+          {/* ========= MAPPING DIALOG (Slide-Over Panel) ========= */}
+          {dialogColumn && dialogTemp && (
+            <div className="mapping-dialog-overlay" onClick={(e) => { if (e.target === e.currentTarget) { setDialogColumn(null); setDialogTemp(null); } }}>
+              <div className="mapping-dialog-panel">
+                
+                {/* Dialog Header */}
+                <div className="mapping-dialog-header">
+                  <div>
+                    <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.8px', fontWeight: 700 }}>Configure Target Column</div>
+                    <code style={{ fontSize: '1rem', fontWeight: 700, color: '#fff', marginTop: '2px', display: 'block' }}>{dialogColumn}</code>
+                  </div>
+                  <button className="overlay-close" onClick={() => { setDialogColumn(null); setDialogTemp(null); }}
+                    style={{ width: '28px', height: '28px', fontSize: '0.9rem' }}>✕</button>
+                </div>
+
+                {/* Dialog Body */}
+                <div className="mapping-dialog-body">
+                  
+                  {/* Mapping Type Selector */}
+                  <div className="dialog-section">
+                    <div className="dialog-section-title">Mapping Type</div>
+                    <div className="mapping-type-grid">
+                      {[
+                        { key: 'direct', icon: '📎', label: 'Direct Column', desc: 'Map from source Excel' },
+                        { key: 'static', icon: '📝', label: 'Static Value', desc: 'Fixed constant value' },
+                        { key: 'filename', icon: '📄', label: 'File Metadata', desc: 'Extract from filename' },
+                        { key: 'derived', icon: '🔗', label: 'Derived / Copy', desc: 'Copy from another column' },
+                      ].map(opt => (
+                        <div key={opt.key}
+                          className={`mapping-type-option ${dialogTemp.mapping_type === opt.key ? 'selected' : ''}`}
+                          onClick={() => setDialogTemp(prev => ({ ...prev, mapping_type: opt.key }))}>
+                          <span className="type-icon">{opt.icon}</span>
+                          <div>
+                            <div className="type-label">{opt.label}</div>
+                            <div className="type-desc">{opt.desc}</div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Configuration Panel — changes based on mapping type */}
+                  <div className="dialog-section">
+                    <div className="dialog-section-title">Configuration</div>
+                    
+                    {/* Direct Column */}
+                    {dialogTemp.mapping_type === 'direct' && (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                          <div style={{ flex: 1 }}>
+                            <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', display: 'block', marginBottom: '2px' }}>Source Sheet</span>
+                            <select value={dialogTemp.source_sheet_idx || 0}
+                              onChange={e => setDialogTemp(prev => ({ ...prev, source_sheet_idx: parseInt(e.target.value), source_column: '' }))}
+                              style={{ padding: '5px 8px', background: 'rgba(0,0,0,0.3)', border: '1px solid var(--border-color)', borderRadius: '5px', color: '#fff', fontSize: '0.75rem', width: '100%', fontFamily: 'inherit' }}>
+                              {createSheets.map((sh, si) => (
+                                <option key={si} value={si}>{sh.name} ({[...new Set(sh.columns)].length} cols)</option>
+                              ))}
+                            </select>
+                          </div>
+                          <div style={{ flex: 1.5 }}>
+                            <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', display: 'block', marginBottom: '2px' }}>Source Column</span>
+                            <select value={dialogTemp.source_column || ''}
+                              onChange={e => setDialogTemp(prev => ({ ...prev, source_column: e.target.value }))}
+                              style={{ padding: '5px 8px', background: 'rgba(0,0,0,0.3)', border: dialogTemp.source_column ? '1px solid rgba(16,185,129,0.4)' : '1px solid var(--border-color)', borderRadius: '5px', color: dialogTemp.source_column ? '#fff' : 'var(--text-muted)', fontSize: '0.75rem', width: '100%', fontFamily: 'inherit' }}>
+                              <option value="">(none — not mapped)</option>
+                              {[...new Set(createSheets[dialogTemp.source_sheet_idx || 0]?.columns || [])].map(c => (
+                                <option key={c} value={c}>{c}</option>
+                              ))}
+                            </select>
+                          </div>
+                        </div>
+                        {/* Sample preview */}
+                        {dialogTemp.source_column && (
+                          <div>
+                            <span style={{ fontSize: '0.62rem', color: 'var(--text-muted)', display: 'block', marginBottom: '3px' }}>Preview Data</span>
+                            <div className="dialog-preview-grid">
+                              {(createPreviews[dialogTemp.source_sheet_idx || 0]?.[dialogTemp.source_column] || []).slice(0, 12).map((v, vi) => (
+                                <span key={vi} className="dialog-preview-chip">
+                                  {v !== null && v !== undefined && String(v).trim() !== '' ? String(v).slice(0, 24) : '—'}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Static Value */}
+                    {dialogTemp.mapping_type === 'static' && (
+                      <div>
+                        <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', display: 'block', marginBottom: '2px' }}>Fixed Value</span>
+                        <input value={dialogTemp.static_value || ''}
+                          onChange={e => setDialogTemp(prev => ({ ...prev, static_value: e.target.value }))}
+                          placeholder='e.g. "Axis Bank POA"'
+                          style={{ padding: '6px 10px', background: 'rgba(0,0,0,0.3)', border: '1px solid var(--border-color)', borderRadius: '5px', color: '#fff', fontSize: '0.78rem', width: '100%', fontFamily: 'inherit' }} />
+                      </div>
+                    )}
+
+                    {/* File Metadata */}
+                    {dialogTemp.mapping_type === 'filename' && (
+                      <div style={{ padding: '10px', background: 'rgba(245,158,11,0.03)', border: '1px solid rgba(245,158,11,0.15)', borderRadius: '6px' }}>
+                        <span style={{ fontSize: '0.75rem', color: 'var(--accent-warning)', fontWeight: 600 }}>📄 Extract from Filename</span>
+                        <p style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', marginTop: '4px', lineHeight: 1.4 }}>
+                          The value for this column will be automatically extracted from the uploaded file's name during consolidation.
+                        </p>
+                        {createFile?.name && (
+                          <div style={{ marginTop: '6px', fontSize: '0.68rem', color: 'var(--text-muted)' }}>
+                            Current file: <code style={{ color: 'var(--accent-cyan)' }}>{createFile.name}</code>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Derived / Copy */}
+                    {dialogTemp.mapping_type === 'derived' && (
+                      <div>
+                        <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', display: 'block', marginBottom: '2px' }}>Copy Value From</span>
+                        <select value={dialogTemp.copy_from_column || ''}
+                          onChange={e => setDialogTemp(prev => ({ ...prev, copy_from_column: e.target.value }))}
+                          style={{ padding: '5px 8px', background: 'rgba(0,0,0,0.3)', border: '1px solid var(--border-color)', borderRadius: '5px', color: dialogTemp.copy_from_column ? '#fff' : 'var(--text-muted)', fontSize: '0.75rem', width: '100%', fontFamily: 'inherit' }}>
+                          <option value="">(select a target column)</option>
+                          {sortCanonicalsBySequence(getSheetCanonicals(activeDestination)).filter(c => c !== dialogColumn).map(c => (
+                            <option key={c} value={c}>{c}</option>
+                          ))}
+                        </select>
+                        <p style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                          If the source doesn't have this column, copy from the selected target column's resolved value.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Column Properties */}
+                  <div className="dialog-section">
+                    <div className="dialog-section-title">Properties</div>
+                    <div style={{ 
+                      display: 'grid', 
+                      gridTemplateColumns: (dialogTemp.mapping_type === 'direct' && dialogTemp.source_column) ? '1fr 1fr 1.2fr' : '1fr 1fr', 
+                      gap: '12px' 
+                    }}>
+                      <div>
+                        <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', display: 'block', marginBottom: '2px' }}>Data Type</span>
+                        <select value={dialogTemp.datatype || 'string'}
+                          onChange={e => setDialogTemp(prev => ({ ...prev, datatype: e.target.value }))}
+                          style={{ padding: '5px 8px', fontSize: '0.75rem', background: 'rgba(0,0,0,0.3)', border: '1px solid var(--border-color)', borderRadius: '5px', color: '#fff', width: '100%', fontFamily: 'inherit' }}>
+                          <option value="string">Text</option>
+                          <option value="integer">Number</option>
+                          <option value="decimal">Decimal</option>
+                          <option value="date">Date</option>
+                          <option value="time">Time</option>
+                        </select>
+                      </div>
+                      <div>
+                        <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', display: 'block', marginBottom: '2px' }}>Default Value</span>
+                        <input value={dialogTemp.default_value || ''}
+                          onChange={e => setDialogTemp(prev => ({ ...prev, default_value: e.target.value }))}
+                          placeholder="(none)"
+                          style={{ padding: '5px 8px', fontSize: '0.75rem', background: 'rgba(0,0,0,0.3)', border: '1px solid var(--border-color)', borderRadius: '5px', color: '#fff', width: '100%', fontFamily: 'inherit' }} />
+                      </div>
+                      {dialogTemp.mapping_type === 'direct' && dialogTemp.source_column && (
+                        <div>
+                          <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', display: 'block', marginBottom: '2px' }}>Fallback Copy From (if direct is empty)</span>
+                          <select value={dialogTemp.copy_from_column || ''}
+                            onChange={e => setDialogTemp(prev => ({ ...prev, copy_from_column: e.target.value }))}
+                            style={{ padding: '5px 8px', fontSize: '0.75rem', background: 'rgba(0,0,0,0.3)', border: '1px solid var(--border-color)', borderRadius: '5px', color: dialogTemp.copy_from_column ? '#fff' : 'var(--text-muted)', width: '100%', fontFamily: 'inherit' }}>
+                            <option value="">(none)</option>
+                            {sortCanonicalsBySequence(getSheetCanonicals(activeDestination)).filter(c => c !== dialogColumn).map(c => (
+                              <option key={c} value={c}>{c}</option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
+                    </div>
+                    <div style={{ display: 'flex', gap: '16px', marginTop: '6px' }}>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
+                        <input type="checkbox" checked={dialogTemp.mandatory || false}
+                          onChange={e => setDialogTemp(prev => ({ ...prev, mandatory: e.target.checked }))}
+                          style={{ width: '13px', height: '13px', cursor: 'pointer' }} />
+                        Required
+                      </label>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '0.72rem', color: 'var(--text-secondary)', opacity: (dialogTemp.datatype === 'integer' || dialogTemp.datatype === 'decimal') ? 1 : 0.4 }}>
+                        <input type="checkbox" 
+                          disabled={dialogTemp.datatype !== 'integer' && dialogTemp.datatype !== 'decimal'}
+                          checked={(createSumColumns[activeDestination] || []).includes(dialogColumn)}
+                          onChange={() => toggleSumColumn(activeDestination, dialogColumn)}
+                          style={{ width: '13px', height: '13px', cursor: (dialogTemp.datatype === 'integer' || dialogTemp.datatype === 'decimal') ? 'pointer' : 'not-allowed' }} />
+                        AutoSum
+                      </label>
+                    </div>
+                  </div>
+
+                </div>
+
+                {/* Dialog Footer */}
+                <div className="mapping-dialog-footer">
+                  <button className="btn-secondary" style={{ width: 'auto', padding: '6px 16px', fontSize: '0.78rem' }}
+                    onClick={() => { setDialogColumn(null); setDialogTemp(null); }}>Cancel</button>
+                  <button className="btn-primary" style={{ width: 'auto', padding: '6px 16px', fontSize: '0.78rem' }}
+                    onClick={saveMappingDialog}>Apply Mapping</button>
+                </div>
+
+              </div>
             </div>
           )}
 

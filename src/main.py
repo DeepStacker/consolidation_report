@@ -32,16 +32,140 @@ def discover_clients(config_dir: str) -> List[Tuple[str, SchemaDefinition]]:
     return schemas
 
 
+def _normalize_string(s: str) -> str:
+    """Normalize a string by converting to lowercase, removing file extension,
+    replacing non-alphanumeric characters with spaces, and stripping."""
+    if not s:
+        return ""
+    import re
+    s_lower = s.lower()
+    if s_lower.endswith((".xlsx", ".xls")):
+        s = s[:-5] if s_lower.endswith(".xlsx") else s[:-4]
+    s = re.sub(r'[^a-z0-9]', ' ', s.lower())
+    return " ".join(s.split())
+
+
+def _compute_filename_similarity(filename: str, schema: SchemaDefinition) -> float:
+    """Compute a matching similarity score between 0.0 and 1.0."""
+    fn_norm = _normalize_string(filename)
+    fn_tokens = set(fn_norm.split())
+    if not fn_tokens:
+        return 0.0
+    
+    patterns = []
+    if schema.client_id:
+        patterns.append(schema.client_id)
+    if schema.client_display_name:
+        patterns.append(schema.client_display_name)
+    if schema.filename_pattern:
+        patterns.append(schema.filename_pattern.replace("*", ""))
+        
+    best_score = 0.0
+    for pat in patterns:
+        pat_norm = _normalize_string(pat)
+        pat_tokens = pat_norm.split()
+        if not pat_tokens:
+            continue
+            
+        matches = sum(1 for tok in pat_tokens if tok in fn_tokens)
+        overlap_score = matches / len(pat_tokens)
+        
+        pat_set = set(pat_tokens)
+        intersection = fn_tokens.intersection(pat_set)
+        union = fn_tokens.union(pat_set)
+        jaccard = len(intersection) / len(union) if union else 0.0
+        
+        score = (overlap_score * 0.75) + (jaccard * 0.25)
+        if score > best_score:
+            best_score = score
+            
+    return best_score
+
+
 def find_client_file(workspace_path: str, schema: SchemaDefinition) -> str:
+    # Tier 1: Try glob pattern first (exact discovery)
     pattern = os.path.join(workspace_path, schema.filename_pattern)
     matches = glob.glob(pattern)
     if not matches:
+        # Tier 2: Case-insensitive substring matching
         all_files = os.listdir(workspace_path)
         pattern_lower = schema.filename_pattern.replace("*", "").lower()
         matches = [
             os.path.join(workspace_path, f) for f in all_files
-            if f.endswith(".xlsx") and pattern_lower in f.lower()
+            if f.endswith((".xlsx", ".xls")) and pattern_lower in f.lower()
         ]
+    
+    if not matches:
+        # Tier 3: Fuzzy token similarity matching
+        all_files = os.listdir(workspace_path)
+        candidates = []
+        for f in all_files:
+            if not f.endswith((".xlsx", ".xls")) or f == "Consolidated_Report.xlsx":
+                continue
+            
+            sim = _compute_filename_similarity(f, schema)
+            if sim >= 0.5:
+                candidates.append((sim, os.path.join(workspace_path, f)))
+        
+        # Sort candidates by similarity score descending
+        candidates.sort(key=lambda x: -x[0])
+        matches = [c[1] for c in candidates]
+        
+    if not matches:
+        # Tier 4: Structural sheet-name match fallback
+        all_files = os.listdir(workspace_path)
+        structural_matches = []
+        schema_sheets = set(schema.sheets.keys())
+        
+        # Load all other active schemas for comparison to prevent "stealing" of files
+        all_active_schemas = []
+        config_dir = os.path.join(workspace_path, "config", "schemas")
+        if os.path.exists(config_dir):
+            for f_yaml in os.listdir(config_dir):
+                if f_yaml.endswith((".yaml", ".yml")):
+                    try:
+                        other_schema = load_schema_config(os.path.join(config_dir, f_yaml))
+                        if other_schema.active:
+                            all_active_schemas.append(other_schema)
+                    except Exception:
+                        continue
+                        
+        for f in all_files:
+            if not f.endswith((".xlsx", ".xls")) or f == "Consolidated_Report.xlsx":
+                continue
+            
+            # Compute similarity
+            sim = _compute_filename_similarity(f, schema)
+            
+            # Check if there is another schema that is a significantly better filename match
+            better_match_exists = False
+            for other in all_active_schemas:
+                if other.client_id == schema.client_id:
+                    continue
+                other_sim = _compute_filename_similarity(f, other)
+                if other_sim > sim and other_sim >= 0.3:
+                    better_match_exists = True
+                    break
+            
+            if better_match_exists:
+                continue # Skip this file, it belongs to another schema
+                
+            fp = os.path.join(workspace_path, f)
+            try:
+                import openpyxl
+                wb = openpyxl.load_workbook(fp, read_only=True)
+                sheets = set(wb.sheetnames)
+                wb.close()
+                overlap = schema_sheets.intersection(sheets)
+                if len(overlap) == len(schema_sheets) and len(schema_sheets) > 0:
+                    structural_matches.append(fp)
+            except Exception:
+                continue
+        if structural_matches:
+            matches = structural_matches
+
+
+
     if not matches:
         raise FileNotFoundError(
             f"Could not find the workbook for '{schema.client_display_name}'.\n"
@@ -56,6 +180,7 @@ def find_client_file(workspace_path: str, schema: SchemaDefinition) -> str:
             best = m
             break
     return best
+
 
 
 def execute_e2e_consolidation(workspace_path: str, output_path: str):

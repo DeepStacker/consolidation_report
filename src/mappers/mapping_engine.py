@@ -111,12 +111,18 @@ def map_sheet_records(raw_records: List[Dict[str, Any]],
                         break
                 if resolved_source:
                     continue # copy source is present, so field can be resolved later in rules
+            
+            # Check if this column has a default value configured
+            if col_def.default_value is not None:
+                continue # default value is present, so field will be populated with default
+                
             missing_mandatory.append(col_def.canonical_name)
             
     if missing_mandatory:
         raise MissingColumnException(
             f"Mandatory target columns are missing in source sheet '{sheet_name}': {missing_mandatory}"
         )
+
         
     # 6. Map and Normalize Raw Data Rows
     mapped_records: List[Dict[str, Any]] = []

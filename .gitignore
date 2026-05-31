@@ -25,3 +25,4 @@ scratch/
 *.swo
 *~
 .DS_Store
+.env

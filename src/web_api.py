@@ -32,6 +32,16 @@ app.add_middleware(GZipMiddleware, minimum_size=500)
 base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 frontend_dist = os.path.join(base_dir, "frontend", "dist")
 
+# Load .env file manually at startup
+env_path = os.path.join(base_dir, ".env")
+if os.path.exists(env_path):
+    with open(env_path, "r", encoding="utf-8") as env_file:
+        for line in env_file:
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                key, val = line.split("=", 1)
+                os.environ[key.strip()] = val.strip()
+
 
 # In-memory store for output files (keyed by session UUID)
 # File bytes are held in RAM only and deleted immediately after download.
@@ -726,6 +736,56 @@ async def preview_file(file_id: str):
 # PIPELINE PREVIEW & MATCHING
 # ──────────────────────────────────────────────
 
+def _normalize_string(s: str) -> str:
+    """Normalize a string by converting to lowercase, removing file extension,
+    replacing non-alphanumeric characters with spaces, and stripping."""
+    if not s:
+        return ""
+    import re
+    s_lower = s.lower()
+    if s_lower.endswith((".xlsx", ".xls")):
+        s = s[:-5] if s_lower.endswith(".xlsx") else s[:-4]
+    s = re.sub(r'[^a-z0-9]', ' ', s.lower())
+    return " ".join(s.split())
+
+
+def _compute_filename_similarity(filename: str, schema: dict) -> float:
+    """Compute a matching similarity score between 0.0 and 1.0."""
+    fn_norm = _normalize_string(filename)
+    fn_tokens = set(fn_norm.split())
+    if not fn_tokens:
+        return 0.0
+    
+    patterns = []
+    if schema.get("client_id"):
+        patterns.append(schema["client_id"])
+    if schema.get("client_display_name"):
+        patterns.append(schema["client_display_name"])
+    if schema.get("filename_pattern"):
+        patterns.append(schema["filename_pattern"].replace("*", ""))
+        
+    best_score = 0.0
+    for pat in patterns:
+        pat_norm = _normalize_string(pat)
+        pat_tokens = pat_norm.split()
+        if not pat_tokens:
+            continue
+            
+        matches = sum(1 for tok in pat_tokens if tok in fn_tokens)
+        overlap_score = matches / len(pat_tokens)
+        
+        pat_set = set(pat_tokens)
+        intersection = fn_tokens.intersection(pat_set)
+        union = fn_tokens.union(pat_set)
+        jaccard = len(intersection) / len(union) if union else 0.0
+        
+        score = (overlap_score * 0.75) + (jaccard * 0.25)
+        if score > best_score:
+            best_score = score
+            
+    return best_score
+
+
 @app.post("/api/preview-matching")
 async def preview_matching(data: dict):
     """Check which active schemas match the given filenames (dry-run matching)."""
@@ -752,10 +812,22 @@ async def preview_matching(data: dict):
                 if not name_lower.endswith((".xlsx", ".xls")):
                     continue
                 match = False
+                match_score = 0.0
+                
+                # Tier 1: Exact or pattern substring match
                 if pattern:
                     pat_lower = pattern.replace("*", "").lower()
                     if pat_lower in name_lower:
                         match = True
+                        match_score = 1.0
+                
+                # Tier 2: Fuzzy match
+                if not match:
+                    sim = _compute_filename_similarity(fn, schema)
+                    if sim >= 0.5:  # threshold for fuzzy matching
+                        match = True
+                        match_score = sim
+                
                 if match:
                     results.setdefault(fn, []).append({
                         "client_id": cid,
@@ -763,11 +835,13 @@ async def preview_matching(data: dict):
                         "filename_pattern": pattern,
                         "sheet_names": sheet_names,
                         "sheet_count": sheet_count,
+                        "match_score": match_score,
                     })
-    # Sort matches: best match first (most sheets → higher priority)
+    # Sort matches: best match first (highest match score, then most sheets)
     for fn in results:
-        results[fn].sort(key=lambda s: -s["sheet_count"])
+        results[fn].sort(key=lambda s: (-s["match_score"], -s["sheet_count"]))
     return {"matches": results}
+
 
 
 # ──────────────────────────────────────────────
@@ -996,6 +1070,18 @@ async def consolidated_sheets():
     return {"sheets": sheets}
 
 
+@app.get("/api/ai-status")
+async def ai_status():
+    """Check if any fallback API keys are configured in the server's .env file."""
+    has_key = bool(
+        os.getenv("GROQ_API_KEY") or 
+        os.getenv("OPENROUTER_API_KEY") or 
+        os.getenv("GEMINI_API_KEY")
+    )
+    return {"configured": has_key}
+
+
+
 @app.post("/api/ai-auto-match")
 async def ai_auto_match(data: dict):
     sheet_name = data.get("sheet_name", "").strip()
@@ -1004,152 +1090,349 @@ async def ai_auto_match(data: dict):
     client_preview = data.get("preview", [])
     api_key = data.get("api_key", "").strip()
 
+    # Fallback to .env keys if not passed by the client UI
     if not api_key:
-        raise HTTPException(400, "Gemini API Key is required")
+        api_key = os.getenv("GROQ_API_KEY") or os.getenv("OPENROUTER_API_KEY") or os.getenv("GEMINI_API_KEY")
+        if api_key:
+            api_key = api_key.strip()
 
-    # Get target headers + preview rows from the consolidated report.
-    # If the source sheet name doesn't match any target sheet, try all available sheets.
-    target_info = get_consolidated_preview(sheet_name, max_rows=20)
-    if not target_info["headers"]:
-        all_sheets = list_consolidated_sheets()
-        if all_sheets:
-            # Use the first available target sheet
-            target_info = get_consolidated_preview(all_sheets[0], max_rows=20)
-            sheet_name = target_info["matched_sheet"] or all_sheets[0]
-        else:
-            sheet_name = "Payment Tracker"
+    if not api_key:
+        raise HTTPException(400, "API Key is required. Please set it in .env or enter it in the UI.")
 
-    target_headers = target_info["headers"]
-    target_preview = target_info["rows"]
+    # Determine sheets to align
+    if sheet_name:
+        all_target_sheets = [sheet_name]
+    else:
+        all_target_sheets = list_consolidated_sheets()
+        if not all_target_sheets:
+            all_target_sheets = ["Payment Tracker", "Master Data"]
 
-    if not target_headers:
-        # Fallback to standard defaults when consolidated file is unavailable
-        target_headers = [
-            "S.no", "Sr No", "Client", "Assayer Name", "Assayer Code", "Assayer Phone",
-            "Assayer PAN", "Location", "State", "Zone", "Branch", "Branch Code",
-            "Month", "Audit Month & Year", "Type of Audit", "No. of Visits",
-            "Base Audit Fee", "Total pay (Base)", "Travel charges",
-            "Cancelled visits", "Branch Cancellation Charges",
-            "Andaman & Nicobar Branch Expenses", "Error Deduction",
-            "Total pay", "Remarks", "PAN Number", "Bank Name",
-            "A/c Number", "IFSC Code", "Schedule date", "Audit Status",
-            "Audit completion date", "No of days audited", "No of Packets audited",
-            "Client fee", "Additional", "Final Client Fees", "Assayer fee",
-            "Additional fee", "Distance", "Base Location", "Cancelled",
-            "Total", "Audit Remarks", "Contact Person", "SOL ID",
-        ]
+    target_configs = {}
+    for t_sheet in all_target_sheets:
+        target_info = get_consolidated_preview(t_sheet, max_rows=5) # Latency optimization: limit target rows to 5
+        target_headers = target_info["headers"]
+        if not target_headers:
+            if t_sheet == "Payment Tracker":
+                target_headers = [
+                    "S.no", "Sr No", "Client", "Assayer Name", "Assayer Code", "Assayer Phone",
+                    "Assayer PAN", "Location", "State", "Zone", "Branch", "Branch Code",
+                    "Month", "Audit Month & Year", "Type of Audit", "No. of Visits",
+                    "Base Audit Fee", "Total pay (Base)", "Travel charges",
+                    "Cancelled visits", "Branch Cancellation Charges",
+                    "Andaman & Nicobar Branch Expenses", "Error Deduction",
+                    "Total pay", "Remarks", "PAN Number", "Bank Name",
+                    "A/c Number", "IFSC Code", "Schedule date", "Audit Status",
+                    "Audit completion date", "No of days audited", "No of Packets audited",
+                ]
+            else:
+                target_headers = [
+                    "S.no", "Client", "Client fee", "Additional", "Final Client Fees", 
+                    "Assayer fee", "Additional fee", "Distance", "Base Location", "Cancelled",
+                    "Total", "Audit Remarks", "Contact Person", "SOL ID", "State", "Month"
+                ]
+        target_configs[t_sheet] = {
+            "headers": target_headers,
+            "preview": target_info["rows"][:5] # Latency optimization: limit rows to 5
+        }
 
-    target_rows_json = json.dumps(target_preview[:10], indent=2)
-    client_rows_json = json.dumps(client_preview[:20], indent=2)
+    # Build target sheets prompt description
+    target_sheets_desc = ""
+    for t_sheet, config in target_configs.items():
+        target_sheets_desc += f"""
+=== TARGET SHEET: "{t_sheet}" ===
+Target column headers:
+{json.dumps(config["headers"])}
 
-    prompt = f"""You are an expert data migration and Excel consolidation architect.
+Sample data rows from "{t_sheet}":
+{json.dumps(config["preview"][:5], indent=2)}
+"""
+
+    client_rows_json = json.dumps(client_preview[:10], indent=2) # Latency optimization: limit source to 10 rows instead of 20
+
+    # Build the prompt
+    if len(all_target_sheets) == 1:
+        # Single sheet mode for backward compatibility
+        prompt = f"""You are an expert data migration and Excel consolidation architect.
 
 We are building a mapping template that maps columns in a raw client Excel sheet to standard "target" database columns of a consolidated report.
 
 === CONTEXT ===
-Active worksheet: "{sheet_name}"
+Active worksheet: "{all_target_sheets[0]}"
 Uploaded filename: "{filename}"
 
 === TARGET (Standard Database) ===
 Target column headers:
-{json.dumps(target_headers)}
+{json.dumps(target_configs[all_target_sheets[0]]["headers"])}
 
-Sample data rows from the TARGET (consolidated report) to show you the expected format, data patterns, and values:
-{target_rows_json}
+Sample data rows from target:
+{json.dumps(target_configs[all_target_sheets[0]]["preview"][:5], indent=2)}
 
 === SOURCE (Uploaded Client Excel) ===
 Source column headers from uploaded file:
 {json.dumps(client_columns)}
 
-Sample data rows from the SOURCE (client file):
+Sample data rows from source:
 {client_rows_json}
 
 === YOUR TASK ===
-Analyze the source columns AND their sample data, then compare them against the target columns and their sample data. For each target column, determine:
+Analyze the source columns AND their sample data, then compare them against the target columns and target sample data. For each target column, determine:
 
-1. **mappings**: Which source column (if any) should map to this target column? Consider:
-   - Column name similarity (e.g. "Branch" ≈ "BRANCH", "A/C No." ≈ "A/c Number")
-   - Data pattern matching (PAN numbers follow "ABCDE1234F" format, IFSC has 11 chars, phone numbers are 10 digits, dates look like "dd-mm-yyyy")
-   - Value ranges and context (e.g. "50000" in "Total pay" column vs "50000" in "Branch Code" — context matters!)
-   - **CRITICAL — DO NOT force a match:** If a target column has NO corresponding source column, leave the mapping as "" (empty string). Never map a column that doesn't semantically belong.
-
-2. **rules**: For each target column, determine:
-   - "datatype": "string" | "integer" | "decimal" | "date" | "time" — infer from the TARGET sample data
-   - "mandatory": true if the column is critical (primary keys, IDs, names, financial totals). False for optional columns.
-   - "default_value": If the source lacks this column, suggest a sensible default:
-     * For financial columns: "0.0"
-     * For text columns: "" (empty) unless it can be derived (e.g. "Client" might default to "Axis Bank POA" if data is from Axis Bank)
-     * Do NOT fabricate data — use "" when unsure
-   - "copy_from_column": Very important — if the source lacks this target column, can it borrow its value from ANOTHER target column's mapped source? Examples:
-     * Target "Location" is missing in source → if "State" exists, consider copying from "State" ONLY if the data pattern matches (e.g. state names are short, city names are different)
-     * Target "Branch Code" missing → if "SOL ID" or "Branch" exists, consider it
-     * **DO NOT** suggest copy_from_column for unrelated columns
-
-=== TRICKY CASES — HANDLE THESE CORRECTLY ===
-1. **Client name from filename**: The `client` / `Client` target column is often missing in source files. Derive it from the uploaded filename (e.g. "Axis Bank POA Payment Tracker - Feb'26.xlsx" → client = "Axis Bank POA", "RBL(Muthoot Fincorp) Payment Tracker -Feb'26.xlsx" → client = "RBL Muthoot Fincorp POA"). Set as `default_value`.
-2. **City vs State**: If source has "State" but NOT "City/Location", do NOT map State → Location. These are different concepts. Leave Location empty or suggest copy_from_column ONLY if the target data clearly shows location values match state names.
-3. **Amount columns**: Multiple financial columns may have similar values. Use the TARGET sample to understand which amount goes where (e.g. "Total pay" vs "Base Audit Fee" vs "Travel charges").
-4. **Code columns**: "SOL ID", "Branch Code", "Assayer Code" may look similar (alphanumeric codes). Check the sample data patterns to distinguish them.
-5. **Phone vs PAN vs IFSC**: These all look like text but have distinct patterns — PAN is 10 chars (5 letters + 4 digits + 1 letter), IFSC is 11 chars (4 letters + 0 + 6 digits), Phone is 10 digits. Use sample data to tell them apart.
-6. **Date columns**: Multiple date columns may exist (Schedule date, Audit completion date). Use the TARGET data to understand which is which based on the date ranges and context.
-7. **Split columns**: Some source files split target columns (e.g. "Branch Code" + "BranchName" → target "SOL ID" + "BRANCH"). Map each to the best match using data patterns.
-8. **Missing columns**: If source simply doesn't have a target column, leave mapping as "". Don't force a match.
+1. **mappings**: Which source column (if any) should map to this target column? Leave as "" if no correspond.
+2. **rules**: Determine datatype, mandatory, default_value, copy_from_column.
 
 Return ONLY valid JSON with this exact structure (no markdown, no explanation):
 {{
   "mappings": {{
-    "Target Column 1": "Source Column 1 or empty string",
-    "Target Column 2": "Source Column 2 or empty string"
+    "Target Column 1": "Source Column 1"
   }},
   "rules": {{
     "Target Column 1": {{
       "datatype": "string | integer | decimal | date | time",
       "mandatory": true | false,
       "default_value": "suggested default or empty string",
-      "copy_from_column": "Other target column name or empty string"
+      "copy_from_column": "Other target column or empty string"
+    }}
+  }}
+}}
+"""
+    else:
+        # High performance global multi-sheet mode
+        prompt = f"""You are an expert data migration and Excel consolidation architect.
+
+We are building a mapping template that maps columns in a raw client Excel sheet to standard "target" database columns across multiple worksheets of a consolidated report.
+
+=== CONTEXT ===
+Uploaded filename: "{filename}"
+
+=== SOURCE (Uploaded Client Excel) ===
+Source column headers:
+{json.dumps(client_columns)}
+
+Sample data rows from source:
+{client_rows_json}
+
+=== TARGET SCHEMAS (Standard Database Sheets) ===
+{target_sheets_desc}
+
+=== YOUR TASK ===
+Analyze the source columns AND their sample data, then compare them against the target columns and target sample data for each target sheet. 
+For EACH target sheet, determine mappings and rules (datatype, mandatory, default_value, copy_from_column).
+Leave mapping as "" if a target column has no semantic source column.
+
+Return ONLY valid JSON with this exact structure (no markdown, no explanation):
+{{
+  "sheets": {{
+    "Payment Tracker": {{
+      "mappings": {{
+        "Target Column 1": "Source Column 1 or empty string"
+      }},
+      "rules": {{
+        "Target Column 1": {{
+          "datatype": "string | integer | decimal | date | time",
+          "mandatory": true | false,
+          "default_value": "suggested default or empty string",
+          "copy_from_column": "Other target column or empty string"
+        }}
+      }}
+    }},
+    "Master Data": {{
+      "mappings": {{
+        "Target Column X": "Source Column X or empty string"
+      }},
+      "rules": {{
+        "Target Column X": {{
+          "datatype": "string | integer | decimal | date | time",
+          "mandatory": true | false,
+          "default_value": "suggested default or empty string",
+          "copy_from_column": "Other target column or empty string"
+        }}
+      }}
     }}
   }}
 }}
 """
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
-    headers = {
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "contents": [{
-            "parts": [{"text": prompt}]
-        }],
-        "generationConfig": {
-            "responseMimeType": "application/json"
-        }
-    }
+    # Build prioritized queue of (provider, key) combinations to try
+    queue = []
+    
+    # If the user passed a specific key in the frontend prompt, try that provider first
+    if api_key:
+        if api_key.startswith("gsk_"):
+            queue.append(("groq", api_key))
+        elif api_key.startswith("sk-or-"):
+            queue.append(("openrouter", api_key))
+        else:
+            queue.append(("gemini", api_key))
+
+    # Add environmental fallback keys from .env if not already in the queue
+    env_gemini = os.getenv("GEMINI_API_KEY")
+    env_groq = os.getenv("GROQ_API_KEY")
+    env_openrouter = os.getenv("OPENROUTER_API_KEY")
+    
+    if env_gemini and env_gemini.strip() not in [k for _, k in queue]:
+        queue.append(("gemini", env_gemini.strip()))
+    if env_groq and env_groq.strip() not in [k for _, k in queue]:
+        queue.append(("groq", env_groq.strip()))
+    if env_openrouter and env_openrouter.strip() not in [k for _, k in queue]:
+        queue.append(("openrouter", env_openrouter.strip()))
+
+    if not queue:
+        raise HTTPException(400, "API Key is required. Please set it in .env or enter it in the UI.")
+
+    res_body = None
+    resolved_provider = None
+    last_error_msg = ""
+
+    # Execute request with automatic fallback rotation
+    for prov, key in queue:
+        print(f"[AI Auto-Match] Attempting template alignment using provider: {prov}...")
+        
+        if prov == "groq":
+            url = "https://api.groq.com/openai/v1/chat/completions"
+            headers = {
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            }
+            for model in ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]:
+                payload = {
+                    "model": model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.1,
+                    "response_format": {"type": "json_object"}
+                }
+                try:
+                    req = urllib.request.Request(
+                        url,
+                        data=json.dumps(payload).encode("utf-8"),
+                        headers=headers,
+                        method="POST"
+                    )
+                    with urllib.request.urlopen(req, timeout=20) as response:
+                        res_body = response.read().decode("utf-8")
+                    resolved_provider = "groq"
+                    break
+                except Exception as e:
+                    print(f"  [Groq] Model {model} failed: {str(e)}")
+                    last_error_msg = f"Groq ({model}) failed: {str(e)}"
+            if res_body:
+                break
+
+        elif prov == "openrouter":
+            url = "https://openrouter.ai/api/v1/chat/completions"
+            headers = {
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "http://localhost:5173",
+                "X-Title": "Consolidation Report Template Mapper",
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            }
+            for model in ["google/gemma-4-31b-it:free", "meta-llama/llama-3.3-70b-instruct:free", "meta-llama/llama-3.2-3b-instruct:free"]:
+                payload = {
+                    "model": model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.1,
+                    "response_format": {"type": "json_object"}
+                }
+                try:
+                    req = urllib.request.Request(
+                        url,
+                        data=json.dumps(payload).encode("utf-8"),
+                        headers=headers,
+                        method="POST"
+                    )
+                    with urllib.request.urlopen(req, timeout=20) as response:
+                        res_body = response.read().decode("utf-8")
+                    resolved_provider = "openrouter"
+                    break
+                except Exception as e:
+                    print(f"  [OpenRouter] Model {model} failed: {str(e)}")
+                    last_error_msg = f"OpenRouter ({model}) failed: {str(e)}"
+            if res_body:
+                break
+
+        elif prov == "gemini":
+            url_25 = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={key}"
+            url_15 = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={key}"
+            headers = {
+                "Content-Type": "application/json",
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            }
+            payload_25 = {
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {"responseMimeType": "application/json"}
+            }
+            try:
+                req = urllib.request.Request(
+                    url_25,
+                    data=json.dumps(payload_25).encode("utf-8"),
+                    headers=headers,
+                    method="POST"
+                )
+                with urllib.request.urlopen(req, timeout=25) as response:
+                    res_body = response.read().decode("utf-8")
+                resolved_provider = "gemini"
+            except Exception as e_25:
+                print(f"  [Gemini] gemini-2.5-flash failed or timed out: {str(e_25)}. Falling back immediately to gemini-1.5-flash...")
+                try:
+                    payload_15 = {"contents": [{"parts": [{"text": prompt}]}]}
+                    req = urllib.request.Request(
+                        url_15,
+                        data=json.dumps(payload_15).encode("utf-8"),
+                        headers=headers,
+                        method="POST"
+                    )
+                    with urllib.request.urlopen(req, timeout=25) as response:
+                        res_body = response.read().decode("utf-8")
+                    resolved_provider = "gemini"
+                except Exception as e_15:
+                    print(f"  [Gemini] gemini-1.5-flash failed: {str(e_15)}")
+                    last_error_msg = f"Gemini failed: {str(e_15)}"
+            if res_body:
+                break
+
+    if not res_body:
+        raise HTTPException(502, f"AI Auto-Match failed: All available providers failed. Last error details: {last_error_msg}")
 
     try:
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(payload).encode("utf-8"),
-            headers=headers,
-            method="POST"
-        )
-        with urllib.request.urlopen(req, timeout=60) as response:
-            res_body = response.read().decode("utf-8")
-            res_json = json.loads(res_body)
-
+        res_json = json.loads(res_body)
+        
+        if resolved_provider in ("groq", "openrouter"):
+            if "choices" not in res_json or not res_json["choices"]:
+                raise HTTPException(502, f"LLM response has no choices: {res_json}")
+            text_out = res_json["choices"][0]["message"]["content"].strip()
+        else:
             if "candidates" not in res_json or not res_json["candidates"]:
                 raise HTTPException(502, f"Gemini response has no candidates: {res_json}")
+            text_out = res_json["candidates"][0]["content"]["parts"][0]["text"].strip()
 
-            text_out = res_json["candidates"][0]["content"]["parts"][0]["text"]
-            mapping_result = json.loads(text_out)
+        # Clean up markdown code block wrappers if present (e.g. from gemini-1.5-flash fallback)
+        if text_out.startswith("```"):
+            lines = text_out.split("\n")
+            if lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].startswith("```"):
+                lines = lines[:-1]
+            text_out = "\n".join(lines).strip()
+
+        mapping_result = json.loads(text_out)
+        
+        if len(all_target_sheets) == 1:
             return {
                 "success": True,
                 "mappings": mapping_result.get("mappings", {}),
                 "rules": mapping_result.get("rules", {}),
-                "target_headers": target_headers,
-                "matched_sheet": target_info.get("matched_sheet", sheet_name)
+                "target_headers": target_configs[all_target_sheets[0]]["headers"],
+                "matched_sheet": all_target_sheets[0]
+            }
+        else:
+            return {
+                "success": True,
+                "sheets": mapping_result.get("sheets", {}),
+                "target_sheets": all_target_sheets
             }
     except Exception as e:
-        raise HTTPException(502, f"AI Auto-Match failed: {str(e)}")
+        raise HTTPException(502, f"AI Auto-Match failed to parse LLM response: {str(e)}")
 
 
 @app.post("/api/schemas/from-mapping")
