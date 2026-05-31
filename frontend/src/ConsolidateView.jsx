@@ -178,9 +178,9 @@ export default function ConsolidateView() {
   return (
     <>
       <div className="consolidate-header">
-        <h1>Consolidation Pipeline</h1>
+        <h1>Consolidation Workspace</h1>
         {selectedFiles.length > 0 && (
-          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+          <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
             <span className="consolidate-file-count">{selectedFiles.length} file{selectedFiles.length > 1 ? 's' : ''} · {formatBytes(totalSize)}</span>
             {matchResults && (
               <span className="consolidate-file-count" style={{ background: matchedCount > 0 ? 'rgba(16,185,129,0.08)' : undefined, color: matchedCount > 0 ? 'var(--accent-success)' : undefined }}>
@@ -196,179 +196,189 @@ export default function ConsolidateView() {
         )}
       </div>
 
-      <div className="consolidate-two-col">
+      {/* Quick tip bar */}
+      <div className="consolidate-tip-bar">
+        <span>Drag & drop Excel files · Press <kbd>Enter</kbd> to consolidate</span>
+      </div>
 
-        {/* ── LEFT COLUMN: Input ── */}
-        <div className="consolidate-left">
-          <div className={`consolidate-dropzone ${compactDrop ? 'has-files' : ''} ${dragActive ? 'active' : ''}`}
-            onDragEnter={handleDrag} onDragOver={handleDrag} onDragLeave={handleDrag}
-            onDrop={handleDrop}
-            onClick={() => fileInputRef.current.click()}>
-            <input type="file" ref={fileInputRef} style={{ display: 'none' }} multiple accept=".xlsx, .xls" onChange={handleFileInputChange} />
-            {compactDrop ? (
-              <div className="consolidate-dropzone-bar">
-                <span>📁 <strong>{selectedFiles.length}</strong> file{selectedFiles.length > 1 ? 's' : ''} queued</span>
-                <div className="consolidate-dropzone-actions">
-                  <span className="consolidate-drop-hint">Drop more or click</span>
-                  <button className="btn-clear" onClick={e => { e.stopPropagation(); clearAll(); }}>Clear</button>
+      <div className="consolidate-single-col">
+
+        <div className={`consolidate-dropzone ${compactDrop ? 'has-files' : ''} ${dragActive ? 'active' : ''}`}
+          onDragEnter={handleDrag} onDragOver={handleDrag} onDragLeave={handleDrag}
+          onDrop={handleDrop}
+          onClick={() => fileInputRef.current.click()}>
+          <input type="file" ref={fileInputRef} style={{ display: 'none' }} multiple accept=".xlsx, .xls" onChange={handleFileInputChange} />
+          {compactDrop ? (
+            <div className="consolidate-dropzone-bar">
+              <span>📁 <strong>{selectedFiles.length}</strong> file{selectedFiles.length > 1 ? 's' : ''} queued</span>
+              <div className="consolidate-dropzone-actions">
+                <span className="consolidate-drop-hint">Drop more or click</span>
+                <button className="btn-clear" onClick={e => { e.stopPropagation(); clearAll(); }}>Clear</button>
+              </div>
+            </div>
+          ) : (
+            <div className="consolidate-dropzone-empty">
+              <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ color: 'var(--text-muted)', marginBottom: '12px', opacity: 0.35 }}>
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                <polyline points="17 8 12 3 7 8"></polyline>
+                <line x1="12" y1="3" x2="12" y2="15"></line>
+              </svg>
+              <h3>Drop spreadsheets here</h3>
+              <p>or click to browse · .xlsx / .xls</p>
+            </div>
+          )}
+        </div>
+
+        {selectedFiles.length > 0 && (
+          <div className="consolidate-file-list">
+            <div className="consolidate-file-list-header">
+              <span>Selected files</span>
+              <button className="btn-sm consolidate-add-btn" onClick={() => fileInputRef.current.click()}
+                title="Add more files">+ Add files</button>
+            </div>
+            {selectedFiles.map((file, idx) => {
+              const match = getFileMatch(file.name);
+              const matched = match.length > 0;
+              return (
+                <div key={idx} className={`consolidate-file-item ${matched ? 'matched' : 'unmatched'}`}>
+                  <span className="consolidate-file-icon">{matched ? '📊' : '⚠️'}</span>
+                  <span className="consolidate-file-name" title={file.name}>{file.name}</span>
+                  {matched ? (
+                    <span className="consolidate-file-match" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                      {match[0].client_display_name && (
+                        <span style={{ background: 'rgba(16,185,129,0.08)', padding: '0 6px', borderRadius: '3px', fontSize: '0.7rem', color: 'var(--accent-success)', fontWeight: 500 }}>{match[0].client_display_name}</span>
+                      )}
+                      <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{file.size ? formatBytes(file.size) : ''}</span>
+                    </span>
+                  ) : (
+                    <span className="consolidate-file-nomatch">
+                      no template matched
+                      {file.size ? <span style={{ fontSize: '0.7rem', marginLeft: '6px', color: 'var(--text-muted)' }}>{formatBytes(file.size)}</span> : null}
+                    </span>
+                  )}
+                  <button className="btn-remove" onClick={() => removeFile(idx)} aria-label={`Remove ${file.name}`}>✕</button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {matchResults && unmatchedCount > 0 && (
+          <div className="consolidate-warn-bar">⚠ {unmatchedCount} file(s) did not match any template — these will be skipped</div>
+        )}
+
+        {selectedFiles.length > 0 && (
+          <button className="btn-primary consolidate-run-btn" disabled={!canRun} onClick={runConsolidation}
+            style={{ opacity: canRun ? 1 : 0.5 }}>
+            {running ? (
+              <><span className="spinner"></span> Processing...</>
+            ) : !matchResults ? (
+              "Analyzing files..."
+            ) : (
+              "▶ Run Consolidation"
+            )}
+          </button>
+        )}
+
+        {success && (
+          <div className="panel" style={{ padding: '22px 24px', background: 'linear-gradient(135deg, rgba(16,185,129,0.06), rgba(16,185,129,0.02))', border: '1px solid rgba(16,185,129,0.25)', borderRadius: 'var(--radius-md)', animation: 'fadeSlideDown 0.35s ease' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '14px', marginBottom: '16px' }}>
+              <div className="consolidate-checkmark" style={{ width: '36px', height: '36px', borderRadius: '99px', background: 'rgba(16,185,129,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: '1.1rem', color: 'var(--accent-success)', flexShrink: 0 }}>✓</div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 700, fontSize: '1.1rem', color: '#fff' }}>Consolidation Complete</div>
+                <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '3px' }}>
+                  {selectedFiles.length} file{selectedFiles.length > 1 ? 's' : ''} processed{auditSummary?.health_score !== undefined ? ` · Health: ${auditSummary.health_score}%` : ''}
                 </div>
               </div>
-            ) : (
-              <div className="consolidate-dropzone-empty">
-                <h3>Drop Excel workbooks here</h3>
-                <p>or click to browse</p>
+            </div>
+            <div style={{ display: 'flex', gap: '10px' }}>
+              <button className="btn-primary" style={{ flex: 1, padding: '12px 18px', fontSize: '0.95rem', fontWeight: 600, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}
+                onClick={() => triggerDownload(fileId)}>
+                ↓ Download
+              </button>
+              <button className="btn-secondary" style={{ flex: 1, padding: '12px 18px', fontSize: '0.95rem', fontWeight: 600, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}
+                onClick={() => setShowPreview(true)}>
+                👁 Preview & Edit
+              </button>
+            </div>
+          </div>
+        )}
+
+        {success && auditLog && (
+          <AuditPanel auditLog={auditLog} auditSummary={auditSummary} />
+        )}
+
+        {logs.length > 0 && (
+          <div className="consolidate-logs" style={{ animation: 'fadeSlideUp 0.3s ease' }}>
+            <div className="consolidate-logs-header" onClick={() => setLogOpen(!logOpen)}>
+              <span className="consolidate-logs-toggle">{logOpen ? '▼' : '▶'}</span>
+              <span style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>🖥 Console ({logs.length} lines)</span>
+              {!logOpen && <span className="consolidate-logs-preview">{logs.slice(-1).join(' • ')}</span>}
+            </div>
+            {logOpen && (
+              <div className="terminal">
+                {logs.map((line, idx) => {
+                  let lineClass = "";
+                  if (line.startsWith("ERROR") || line.includes("[ERROR]")) lineClass = "error";
+                  if (line.includes("SUCCESS") || line.includes("DONE") || line.includes("successfully")) lineClass = "success";
+                  return <div className={`terminal-line ${lineClass}`} key={idx}>{line}</div>;
+                })}
+                <div ref={terminalEndRef} />
               </div>
             )}
           </div>
+        )}
 
-          {selectedFiles.length > 0 && (
-            <div className="consolidate-file-list">
-              {selectedFiles.map((file, idx) => {
-                const match = getFileMatch(file.name);
-                const matched = match.length > 0;
-                return (
-                  <div key={idx} className={`consolidate-file-item ${matched ? 'matched' : 'unmatched'}`}>
-                    <span className="consolidate-file-icon">{matched ? '📊' : '⚠️'}</span>
-                    <span className="consolidate-file-name" title={file.name}>{file.name}</span>
-                    {matched ? (
-                      <span className="consolidate-file-match" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-                        {match[0].client_display_name && (
-                          <span style={{ background: 'rgba(16,185,129,0.08)', padding: '0 6px', borderRadius: '3px', fontSize: '0.7rem', color: 'var(--accent-success)', fontWeight: 500 }}>{match[0].client_display_name}</span>
+        {batches.length > 0 && (
+          <div className="consolidate-history" style={{ animation: 'fadeSlideUp 0.35s ease' }}>
+            <div className="consolidate-logs-header" onClick={() => setHistoryOpen(!historyOpen)}
+              style={{ borderBottom: historyOpen ? 'none' : undefined, borderRadius: historyOpen ? '5px 5px 0 0' : '5px' }}>
+              <span className="consolidate-logs-toggle">{historyOpen ? '▼' : '▶'}</span>
+              <span style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>📋 Run History ({batches.length})</span>
+              <span className="consolidate-logs-preview">{formatTime(batches[0]?.timestamp)}</span>
+              {batches.length > 0 && (
+                <button className="btn-sm" onClick={e => { e.stopPropagation(); clearHistory(); }}
+                  style={{ marginLeft: 'auto', fontSize: '0.7rem', padding: '1px 6px' }}>Clear</button>
+              )}
+            </div>
+            {historyOpen && (
+              <div className="consolidate-history-list">
+                {batches.map((b, i) => {
+                  const sc = b.health_score ?? 100;
+                  const scColor = sc >= 90 ? 'var(--accent-success)' : sc >= 60 ? 'var(--accent-warning)' : 'var(--accent-error)';
+                  const isLatest = i === 0 && fileId === b.file_id;
+                  return (
+                    <div key={b.id} className={`consolidate-history-item ${isLatest ? 'latest' : ''}`}>
+                      <div className="consolidate-history-item-top">
+                        <span className="consolidate-history-status"
+                          style={{ color: b.status === 'SUCCESS' ? 'var(--accent-success)' : 'var(--accent-error)' }}>
+                          {b.status === 'SUCCESS' ? '✓' : '✗'}
+                        </span>
+                        <span className="consolidate-history-time">{formatTime(b.timestamp)}</span>
+                        <span className="consolidate-history-score" style={{ color: scColor }}>
+                          {sc}%
+                        </span>
+                        <span className="consolidate-history-files">
+                          {b.filenames?.join(', ') || '—'}
+                        </span>
+                        {b.file_id && (
+                          <div className="consolidate-history-actions">
+                            <button className="btn-sm" onClick={() => triggerDownload(b.file_id)}
+                              title="Download">↓</button>
+                            <button className="btn-sm" onClick={() => {
+                              setSuccess(true); setFileId(b.file_id);
+                              setShowPreview(true);
+                            }} title="Preview">👁</button>
+                          </div>
                         )}
-                        <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{file.size ? formatBytes(file.size) : ''}</span>
-                      </span>
-                    ) : (
-                      <span className="consolidate-file-nomatch">
-                        no schema
-                        {file.size ? <span style={{ fontSize: '0.7rem', marginLeft: '6px', color: 'var(--text-muted)' }}>{formatBytes(file.size)}</span> : null}
-                      </span>
-                    )}
-                    <button className="btn-remove" onClick={() => removeFile(idx)} aria-label={`Remove ${file.name}`}>✕</button>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-
-          {matchResults && unmatchedCount > 0 && (
-            <div className="consolidate-warn-bar">⚠ {unmatchedCount} unmatched — will be skipped</div>
-          )}
-
-          {selectedFiles.length > 0 && (
-            <button className="btn-primary consolidate-run-btn" disabled={!canRun} onClick={runConsolidation}
-              style={{ opacity: canRun ? 1 : 0.5 }}>
-              {running ? (
-                <><span className="spinner"></span> Processing...</>
-              ) : !matchResults ? (
-                "Analyzing files..."
-              ) : (
-                "▶ Run Consolidation"
-              )}
-            </button>
-          )}
-        </div>
-
-        {/* ── RIGHT COLUMN: Output ── */}
-        <div className="consolidate-right">
-
-          {logs.length === 0 && !success && batches.length === 0 && (
-            <div className="consolidate-right-placeholder" style={{ display: 'flex', flexDirection: 'column', gap: '8px', alignItems: 'center' }}>
-              <span style={{ fontSize: '2rem', opacity: 0.3 }}>➡</span>
-              <span>Drop Excel files on the left, then run</span>
-              <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>Press <kbd style={{ background: 'rgba(255,255,255,0.06)', padding: '1px 5px', borderRadius: '3px' }}>Enter</kbd> to run when ready</span>
-            </div>
-          )}
-
-          {logs.length > 0 && (
-            <div className="consolidate-logs">
-              <div className="consolidate-logs-header" onClick={() => setLogOpen(!logOpen)}>
-                <span className="consolidate-logs-toggle">{logOpen ? '▼' : '▶'}</span>
-                <span>Console ({logs.length} lines)</span>
-                {!logOpen && <span className="consolidate-logs-preview">{logs.slice(-1).join(' • ')}</span>}
-              </div>
-              {logOpen && (
-                <div className="terminal">
-                  {logs.map((line, idx) => {
-                    let lineClass = "";
-                    if (line.startsWith("ERROR") || line.includes("[ERROR]")) lineClass = "error";
-                    if (line.includes("SUCCESS") || line.includes("DONE") || line.includes("successfully")) lineClass = "success";
-                    return <div className={`terminal-line ${lineClass}`} key={idx}>{line}</div>;
-                  })}
-                  <div ref={terminalEndRef} />
-                </div>
-              )}
-            </div>
-          )}
-
-          {success && (
-            <div className="consolidate-success-bar">
-              <div className="consolidate-success-left">
-                <span className="consolidate-success-icon">✓</span>
-                <span className="consolidate-success-label">Complete</span>
-              </div>
-              <div className="consolidate-success-actions">
-                <button className="btn-download compact" onClick={() => triggerDownload(fileId)}>Download</button>
-                <button className="btn-secondary compact" onClick={() => setShowPreview(true)}>Preview & Edit</button>
-              </div>
-            </div>
-          )}
-
-          {success && auditLog && (
-            <AuditPanel auditLog={auditLog} auditSummary={auditSummary} />
-          )}
-
-          {/* ── Run History ── */}
-          {batches.length > 0 && (
-            <div className="consolidate-history">
-              <div className="consolidate-logs-header" onClick={() => setHistoryOpen(!historyOpen)}
-                style={{ borderBottom: historyOpen ? 'none' : undefined, borderRadius: historyOpen ? '5px 5px 0 0' : '5px' }}>
-                <span className="consolidate-logs-toggle">{historyOpen ? '▼' : '▶'}</span>
-                <span>Run History ({batches.length})</span>
-                <span className="consolidate-logs-preview">latest: {formatTime(batches[0]?.timestamp)}</span>
-                {batches.length > 0 && (
-                  <button className="btn-sm" onClick={e => { e.stopPropagation(); clearHistory(); }}
-                    style={{ marginLeft: 'auto', fontSize: '0.7rem', padding: '1px 6px' }}>Clear</button>
-                )}
-              </div>
-              {historyOpen && (
-                <div className="consolidate-history-list">
-                  {batches.map((b, i) => {
-                    const sc = b.health_score ?? 100;
-                    const scColor = sc >= 90 ? 'var(--accent-success)' : sc >= 60 ? 'var(--accent-warning)' : 'var(--accent-error)';
-                    const isLatest = i === 0 && fileId === b.file_id;
-                    return (
-                      <div key={b.id} className={`consolidate-history-item ${isLatest ? 'latest' : ''}`}>
-                        <div className="consolidate-history-item-top">
-                          <span className="consolidate-history-status"
-                            style={{ color: b.status === 'SUCCESS' ? 'var(--accent-success)' : 'var(--accent-error)' }}>
-                            {b.status === 'SUCCESS' ? '✓' : '✗'}
-                          </span>
-                          <span className="consolidate-history-time">{formatTime(b.timestamp)}</span>
-                          <span className="consolidate-history-score" style={{ color: scColor }}>
-                            {sc}%
-                          </span>
-                          <span className="consolidate-history-files">
-                            {b.filenames?.join(', ') || '—'}
-                          </span>
-                          {b.file_id && (
-                            <div className="consolidate-history-actions">
-                              <button className="btn-sm" onClick={() => triggerDownload(b.file_id)}
-                                title="Download">↓</button>
-                              <button className="btn-sm" onClick={() => {
-                                setSuccess(true); setFileId(b.file_id);
-                                setShowPreview(true);
-                              }} title="Preview">👁</button>
-                            </div>
-                          )}
-                        </div>
                       </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
 
       </div>
 

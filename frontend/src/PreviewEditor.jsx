@@ -4,30 +4,148 @@ const API_BASE = (window.location.origin === "http://localhost:5173" || window.l
   ? "http://127.0.0.1:8000"
   : window.location.origin;
 
-const SourceSheetView = memo(function SourceSheetView({ headers, rows }) {
+const SourceSheetView = memo(function SourceSheetView({ headers, rows, issues }) {
+  const [showIssuesOnly, setShowIssuesOnly] = useState(false);
+  const [currentIssueIdx, setCurrentIssueIdx] = useState(0);
+
+  const hasSrcIssue = useCallback((ri, col) => {
+    if (!issues || !issues[ri]) return null;
+    const info = issues[ri][col];
+    if (!info) return null;
+    if (Array.isArray(info)) return info[0]; // take first issue
+    return typeof info === 'string' ? { type: 'warning', message: info } : info;
+  }, [issues]);
+
+  // Compute flattened issue list + counts (mirrors consolidated view)
+  const allSrcIssues = useMemo(() => {
+    const list = [];
+    const counts = { missing: 0, outlier: 0, pattern: 0, inconsistency: 0, warning: 0 };
+    if (!issues) return Object.assign(list, { counts });
+    for (const [ri, cellIssues] of Object.entries(issues)) {
+      for (const [col, info] of Object.entries(cellIssues)) {
+        const item = Array.isArray(info) ? info[0] : (typeof info === 'string' ? { type: 'warning', message: info } : info);
+        const type = item?.type || 'warning';
+        const msg = item?.message || '';
+        list.push({ row: parseInt(ri), col, message: msg, type });
+        if (counts[type] !== undefined) counts[type]++;
+        else counts.warning++;
+      }
+    }
+    list.sort((a, b) => a.row - b.row || a.col.localeCompare(b.col));
+    return Object.assign(list, { counts });
+  }, [issues]);
+
+  const srcIssueCountByCol = useMemo(() => {
+    const map = {};
+    for (const iss of allSrcIssues) map[iss.col] = (map[iss.col] || 0) + 1;
+    return map;
+  }, [allSrcIssues]);
+
+  const displayRows = useMemo(() => {
+    if (!showIssuesOnly) return rows;
+    return rows.filter((_, ri) => {
+      const cellIssues = issues?.[ri] || issues?.[String(ri)];
+      return cellIssues && Object.keys(cellIssues).length > 0;
+    });
+  }, [rows, showIssuesOnly, issues]);
+
+  const navigateToSrcIssue = useCallback((dir) => {
+    if (allSrcIssues.length === 0) return;
+    const next = (currentIssueIdx + dir + allSrcIssues.length) % allSrcIssues.length;
+    setCurrentIssueIdx(next);
+    const issue = allSrcIssues[next];
+    const cell = document.querySelector(`.source-view [data-src-issue-row="${issue.row}"][data-src-issue-col="${CSS.escape(issue.col)}"]`);
+    if (cell) cell.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }, [allSrcIssues, currentIssueIdx]);
+
   return (
-    <div className="preview-table-wrap source-view">
-      <table className="preview-table">
-        <thead>
-          <tr>
-            <th className="preview-rownum" style={{ minWidth: '40px', width: '40px' }}>#</th>
-            {headers.map(h => <th key={h}><span className="preview-th-label">{h}</span></th>)}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row, ri) => (
-            <tr key={ri} className="preview-row">
-              <td className="preview-rownum" style={{ fontSize: '0.72rem' }}>{ri + 1}</td>
+    <>
+      {allSrcIssues.length > 0 && (
+        <div className="preview-issue-bar">
+          <span className="preview-issue-count">{allSrcIssues.length}</span>
+          <span>issue{allSrcIssues.length !== 1 ? 's' : ''}</span>
+          <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+            {allSrcIssues.counts.missing > 0 && (
+              <span className="issue-type-badge issue-type-missing" title="Missing values">{allSrcIssues.counts.missing} missing</span>
+            )}
+            {allSrcIssues.counts.outlier > 0 && (
+              <span className="issue-type-badge issue-type-outlier" title="Statistical outliers">{allSrcIssues.counts.outlier} outlier</span>
+            )}
+            {allSrcIssues.counts.pattern > 0 && (
+              <span className="issue-type-badge issue-type-pattern" title="Pattern mismatches">{allSrcIssues.counts.pattern} pattern</span>
+            )}
+            {allSrcIssues.counts.inconsistency > 0 && (
+              <span className="issue-type-badge issue-type-inconsistency" title="Data inconsistencies">{allSrcIssues.counts.inconsistency} inconsistent</span>
+            )}
+          </div>
+          <button className={`btn-sm preview-issue-filter ${showIssuesOnly ? 'active' : ''}`}
+            onClick={() => { setShowIssuesOnly(v => !v); setCurrentIssueIdx(0); }}
+            title="Show only rows with issues">
+            {showIssuesOnly ? 'All rows' : 'Issues only'}
+          </button>
+          <div className="preview-issue-nav">
+            <button className="btn-sm" onClick={() => navigateToSrcIssue(-1)} aria-label="Previous issue">◀</button>
+            <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', minWidth: '32px', textAlign: 'center' }}>
+              {allSrcIssues.length > 0 ? currentIssueIdx + 1 : 0}/{allSrcIssues.length}
+            </span>
+            <button className="btn-sm" onClick={() => navigateToSrcIssue(1)} aria-label="Next issue">▶</button>
+          </div>
+        </div>
+      )}
+      <div className="preview-table-wrap source-view">
+        <table className="preview-table">
+          <thead>
+            <tr>
+              <th className="preview-rownum" style={{ minWidth: '32px', width: '32px' }}>#</th>
               {headers.map(h => (
-                <td key={h} className="preview-cell" style={{ fontSize: '0.78rem', padding: '2px 6px' }}>
-                  {row[h] !== null && row[h] !== undefined ? String(row[h]) : ''}
-                </td>
+                <th key={h}>
+                  <div className="preview-th-content">
+                    <span className="preview-th-label" title={h}>{h}</span>
+                    {srcIssueCountByCol[h] > 0 && (
+                      <span className="preview-col-issue-badge" title={`${srcIssueCountByCol[h]} issue(s) in this column`}>
+                        {srcIssueCountByCol[h]}
+                      </span>
+                    )}
+                  </div>
+                </th>
               ))}
             </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+          </thead>
+          <tbody>
+            {displayRows.length === 0 && (
+              <tr><td colSpan={headers.length + 1} style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)' }}>No matching rows</td></tr>
+            )}
+            {displayRows.map((row, ri) => {
+              const actualRi = showIssuesOnly ? rows.indexOf(row) : ri;
+              const rowHasIssue = !!(issues?.[actualRi] || issues?.[String(actualRi)]);
+              return (
+                <tr key={ri} className={`preview-row${rowHasIssue ? ' has-issue-row' : ''}`}>
+                  <td className="preview-rownum" style={{ fontSize: '0.72rem' }}>
+                    <div className="preview-rownum-inner">
+                      <span>{actualRi + 1}</span>
+                      {rowHasIssue && <span className="preview-issue-dot"></span>}
+                    </div>
+                  </td>
+                  {headers.map(h => {
+                    const issueInfo = hasSrcIssue(actualRi, h);
+                    let tdClass = "preview-cell";
+                    if (issueInfo) tdClass += ` has-issue issue-${issueInfo.type}`;
+                    return (
+                      <td key={h} className={tdClass}
+                        title={issueInfo ? `⚠ ${issueInfo.type}: ${issueInfo.message}` : undefined}
+                        {...(issueInfo ? { 'data-src-issue-row': actualRi, 'data-src-issue-col': h } : {})}
+                        style={{ fontSize: '0.76rem', padding: '1px 4px' }}>
+                        {row[h] !== null && row[h] !== undefined ? String(row[h]) : ''}
+                      </td>
+                    );
+                  })}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </>
   );
 });
 
@@ -49,19 +167,30 @@ const PreviewRow = memo(function PreviewRow({ row, ri, headers, zoom, issues, ce
       </td>
       {headers.map((h, ci) => {
         const val = row[h];
-        const issueMsg = hasIssue(ri, h);
+        const issueInfo = hasIssue(ri, h);
+        const issueType = issueInfo ? issueInfo.type : null;
+        const issueMsg = issueInfo ? issueInfo.message : null;
         const edited = isCellEdited(ri, h);
         const isFocused = focusedCell && focusedCell.row === ri && focusedCell.col === ci;
         const showInput = isFocused || edited;
 
+        // Issue resolution: if the cell has been edited, check if the issue is resolved
+        const resolvedIssue = edited && issueType && (() => {
+          const newVal = val;
+          if (issueType === 'missing' && newVal !== null && newVal !== undefined && String(newVal).trim() !== '' && String(newVal).trim() !== '-' && String(newVal).trim() !== 'N/A') return true;
+          return false;
+        })();
+
         let tdClass = "preview-cell";
-        if (issueMsg) tdClass += " has-issue";
+        if (issueType && !resolvedIssue) tdClass += ` has-issue issue-${issueType}`;
+        if (resolvedIssue) tdClass += " is-resolved";
         if (edited) tdClass += " is-edited";
 
         return (
           <td key={h} className={tdClass}
-            {...(issueMsg ? { 'data-issue-row': ri, 'data-issue-col': h } : {})}
-            onClick={() => handleCellClick(ri, h, issueMsg)}>
+            title={issueType && !resolvedIssue ? `⚠ ${issueType}: ${issueMsg}` : resolvedIssue ? '✓ Issue resolved by your edit' : undefined}
+            {...(issueType && !resolvedIssue ? { 'data-issue-row': ri, 'data-issue-col': h } : {})}
+            onClick={() => handleCellClick(ri, h, issueInfo)}>
             {showInput ? (
               <>
                 <input className="preview-input"
@@ -102,6 +231,7 @@ export default function PreviewEditor({ fileId, onClose }) {
   const [mode, setMode] = useState("consolidated");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [saveDone, setSaveDone] = useState(false);
   const [zoom, setZoom] = useState(1);
   const [searchQuery, setSearchQuery] = useState("");
   const [focusedCell, setFocusedCell] = useState(null);
@@ -126,6 +256,15 @@ export default function PreviewEditor({ fileId, onClose }) {
   const rows = current.rows || [];
   const issues = current.issues || {};
 
+  // Normalise consolidated issues keys to integers for robust lookup (identical to source issues)
+  const consolidatedIssues = useMemo(() => {
+    const normalised = {};
+    for (const [k, v] of Object.entries(issues)) {
+      normalised[parseInt(k)] = v;
+    }
+    return normalised;
+  }, [issues]);
+
   // The actual rows to display (edited or original)
   const displayRows = useMemo(() => {
     const base = currentEdits.rows || rows;
@@ -141,26 +280,32 @@ export default function PreviewEditor({ fileId, onClose }) {
         if (!match) return false;
       }
       if (showIssuesOnly) {
-        const cellIssues = issues[ri];
+        const cellIssues = consolidatedIssues[ri];
         if (!cellIssues || Object.keys(cellIssues).length === 0) return false;
       }
       return true;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows, currentEdits.rows, searchQuery, headers, editVersion, showIssuesOnly, issues]);
+  }, [rows, currentEdits.rows, searchQuery, headers, editVersion, showIssuesOnly, consolidatedIssues]);
 
   const cellChanges = currentEdits.changes;
 
   const allIssues = useMemo(() => {
     const list = [];
-    for (const [ri, cellIssues] of Object.entries(issues)) {
-      for (const [col, msg] of Object.entries(cellIssues)) {
-        list.push({ row: parseInt(ri), col, message: msg });
+    const counts = { missing: 0, outlier: 0, pattern: 0, inconsistency: 0, warning: 0 };
+    for (const [ri, cellIssues] of Object.entries(consolidatedIssues)) {
+      for (const [col, info] of Object.entries(cellIssues)) {
+        const msg = typeof info === 'string' ? info : info.message || '';
+        const type = typeof info === 'string' ? 'warning' : info.type || 'warning';
+        list.push({ row: parseInt(ri), col, message: msg, type });
+        if (counts[type] !== undefined) counts[type]++;
+        else counts.warning++;
       }
     }
     list.sort((a, b) => a.row - b.row || a.col.localeCompare(b.col));
+    list.counts = counts;
     return list;
-  }, [issues]);
+  }, [consolidatedIssues]);
 
   const issueCountByCol = useMemo(() => {
     const map = {};
@@ -170,12 +315,79 @@ export default function PreviewEditor({ fileId, onClose }) {
     return map;
   }, [allIssues]);
 
+  const issueTypeCounts = allIssues.counts;
+
   // Source view data
   const currentSrcFile = sources[activeSourceFile] || {};
   const currentSrcSheet = currentSrcFile[activeSourceSheet] || {};
   const srcHeaders = currentSrcSheet.headers || [];
   const srcRows = currentSrcSheet.rows || [];
   const srcError = sources[activeSourceFile]?.error;
+
+  // Use backend-provided issues when available (more accurate), fallback to client-side
+  const sourceIssues = useMemo(() => {
+    // Check if backend already provided issues for this source sheet
+    const backendIssues = currentSrcSheet.issues;
+    if (backendIssues && Object.keys(backendIssues).length > 0) {
+      // Backend keys may be string or int — normalise to int keys
+      const normalised = {};
+      for (const [k, v] of Object.entries(backendIssues)) {
+        normalised[parseInt(k)] = v;
+      }
+      return normalised;
+    }
+
+    // Fallback: lightweight client-side detection
+    const result = {};
+    if (!srcRows.length || !srcHeaders.length) return result;
+
+    const dateRe = /^\d{2,4}[-\/]\d{1,2}[-\/]\d{2,4}$/;
+    const numRe = /^-?\d+(\.\d+)?$/;
+    const codeRe = /^[A-Z0-9\-_]+$/i;
+
+    const colMeta = {};
+    for (const h of srcHeaders) {
+      const vals = srcRows.map(r => r[h]);
+      const filled = vals.filter(v => v != null && v !== '');
+      const fillRate = filled.length / vals.length;
+      const numCount = filled.filter(v => numRe.test(String(v))).length;
+      const dateCount = filled.filter(v => dateRe.test(String(v))).length;
+      const codeCount = filled.filter(v => codeRe.test(String(v))).length;
+
+      colMeta[h] = { fillRate, numCount, dateCount, codeCount };
+      if (filled.length > 0) {
+        if (numCount > filled.length * 0.7) colMeta[h].type = 'numeric';
+        else if (dateCount > filled.length * 0.7) colMeta[h].type = 'date';
+        else if (codeCount > filled.length * 0.5) colMeta[h].type = 'code';
+        else colMeta[h].type = 'text';
+      } else colMeta[h].type = 'text';
+    }
+
+    for (let ri = 0; ri < srcRows.length; ri++) {
+      for (const h of srcHeaders) {
+        const val = srcRows[ri][h];
+        const meta = colMeta[h];
+        // Missing
+        if ((val == null || val === '') && meta.fillRate > 0.5) {
+          result[ri] = result[ri] || {};
+          result[ri][h] = { type: 'missing', message: 'Missing value' };
+          continue;
+        }
+        // Pattern mismatch
+        if (val != null && val !== '' && meta.type !== 'text') {
+          const s = String(val);
+          if (meta.type === 'numeric' && !numRe.test(s)) {
+            result[ri] = result[ri] || {};
+            result[ri][h] = { type: 'pattern', message: `Expected numeric, got "${s}"` };
+          } else if (meta.type === 'date' && !dateRe.test(s)) {
+            result[ri] = result[ri] || {};
+            result[ri][h] = { type: 'pattern', message: `Expected date format, got "${s}"` };
+          }
+        }
+      }
+    }
+    return result;
+  }, [srcRows, srcHeaders, currentSrcSheet.issues]);
 
   useEffect(() => {
     if (!fileId) return;
@@ -254,18 +466,21 @@ export default function PreviewEditor({ fileId, onClose }) {
   }, [activeSheet, bump]);
 
   const hasIssue = useCallback((ri, col) => {
-    const cellIssues = issues[ri];
+    const cellIssues = consolidatedIssues[ri];
     if (!cellIssues) return null;
-    for (const [field, msg] of Object.entries(cellIssues)) {
-      if (field === col) return msg;
+    for (const [field, info] of Object.entries(cellIssues)) {
+      if (field === col) {
+        if (typeof info === 'string') return { type: 'warning', message: info };
+        return info;
+      }
     }
     return null;
-  }, [issues]);
+  }, [consolidatedIssues]);
 
   const rowIssueCount = useCallback((ri) => {
-    const cellIssues = issues[ri];
+    const cellIssues = consolidatedIssues[ri];
     return cellIssues ? Object.keys(cellIssues).length : 0;
-  }, [issues]);
+  }, [consolidatedIssues]);
 
   const rowEditCount = useCallback((ri) => {
     const sheet = editsRef.current[activeSheet];
@@ -277,47 +492,96 @@ export default function PreviewEditor({ fileId, onClose }) {
     return count;
   }, [activeSheet, editVersion]);
 
-  /* DOM-based keyboard navigation */
+  /* DOM-based keyboard navigation (Excel-like navigation engine) */
   const handleKeyNav = useCallback((e, ri, ci) => {
     const { key, shiftKey } = e;
-    if (key !== "Tab" && key !== "Enter") return;
-    e.preventDefault();
+    
+    // Support Tab, Enter, Escape, and Arrow Up/Down/Left/Right keys
+    const isArrow = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(key);
+    if (key !== "Tab" && key !== "Enter" && key !== "Escape" && !isArrow) return;
 
     const input = e.currentTarget;
+    
+    if (key === "Escape") {
+      e.preventDefault();
+      input.blur();
+      setFocusedCell(null);
+      return;
+    }
+
+    e.preventDefault();
+
     const td = input.closest('td');
     if (!td) return;
+    const tr = td.closest('tr');
+    if (!tr) return;
 
     let nextTd = null;
+
     if (key === "Tab") {
       nextTd = shiftKey ? td.previousElementSibling : td.nextElementSibling;
-      if (!nextTd) {
-        const tr = td.closest('tr');
-        if (!tr) return;
+      if (!nextTd || nextTd.classList.contains('preview-rownum')) {
         const nextTr = shiftKey ? tr.previousElementSibling : tr.nextElementSibling;
-        if (!nextTr) return;
-        const tds = nextTr.querySelectorAll('td');
-        nextTd = shiftKey ? tds[tds.length - 1] : tds[0];
+        if (nextTr) {
+          const tds = nextTr.querySelectorAll('td:not(.preview-rownum)');
+          nextTd = shiftKey ? tds[tds.length - 1] : tds[0];
+        }
       }
     } else if (key === "Enter") {
-      const tr = td.closest('tr');
-      if (!tr) return;
+      const nextTr = shiftKey ? tr.previousElementSibling : tr.nextElementSibling;
+      if (nextTr) {
+        const tds = nextTr.querySelectorAll('td');
+        nextTd = tds[ci + 1] || tds[tds.length - 1];
+      }
+    } else if (key === "ArrowUp") {
+      const nextTr = tr.previousElementSibling;
+      if (nextTr) {
+        const tds = nextTr.querySelectorAll('td');
+        nextTd = tds[ci + 1];
+      }
+    } else if (key === "ArrowDown") {
       const nextTr = tr.nextElementSibling;
-      if (!nextTr) return;
-      const tds = nextTr.querySelectorAll('td');
-      nextTd = tds[ci] || tds[tds.length - 1];
+      if (nextTr) {
+        const tds = nextTr.querySelectorAll('td');
+        nextTd = tds[ci + 1];
+      }
+    } else if (key === "ArrowLeft") {
+      nextTd = td.previousElementSibling;
+      if (nextTd && nextTd.classList.contains('preview-rownum')) {
+        const nextTr = tr.previousElementSibling;
+        if (nextTr) {
+          const tds = nextTr.querySelectorAll('td:not(.preview-rownum)');
+          nextTd = tds[tds.length - 1];
+        } else {
+          nextTd = null;
+        }
+      }
+    } else if (key === "ArrowRight") {
+      nextTd = td.nextElementSibling;
+      if (!nextTd) {
+        const nextTr = tr.nextElementSibling;
+        if (nextTr) {
+          const tds = nextTr.querySelectorAll('td:not(.preview-rownum)');
+          nextTd = tds[0];
+        }
+      }
     }
 
     if (nextTd) {
       const nextInput = nextTd.querySelector('input.preview-input');
       const nextSpan = nextTd.querySelector('.preview-cell-value');
-      if (nextInput) { nextInput.focus(); nextInput.select(); }
-      else if (nextSpan) { nextSpan.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); }
+      if (nextInput) {
+        nextInput.focus();
+        nextInput.select();
+      } else if (nextSpan) {
+        nextSpan.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+      }
     }
-  }, []);
+  }, [setFocusedCell]);
 
-  const handleCellClick = useCallback((ri, col, issueMsg) => {
-    if (issueMsg) {
-      setSelectedWarning({ row: ri, col, message: issueMsg });
+  const handleCellClick = useCallback((ri, col, issueInfo) => {
+    if (issueInfo) {
+      setSelectedWarning({ row: ri, col, message: issueInfo.message || issueInfo, type: issueInfo.type || 'warning' });
       setShowWarningSidebar(true);
     }
   }, []);
@@ -338,10 +602,12 @@ export default function PreviewEditor({ fileId, onClose }) {
       });
       if (!r.ok) throw new Error("Save failed");
       const result = await r.json();
-      window.open(`${API_BASE}/api/download/${result.file_id}`, '_blank');
-      onClose();
-    } catch (e) { alert(`Save failed: ${e.message}`); }
-    finally { setSaving(false); }
+      setSaveDone(true);
+      setTimeout(() => {
+        window.open(`${API_BASE}/api/download/${result.file_id}`, '_blank');
+        onClose();
+      }, 600);
+    } catch (e) { alert(`Save failed: ${e.message}`); setSaving(false); }
   };
 
   const handleClose = useCallback(() => {
@@ -407,6 +673,7 @@ export default function PreviewEditor({ fileId, onClose }) {
     setBulkCol(null);
     setShowWarningSidebar(false);
     setFocusedCell(null);
+    setSaveDone(false);
   }, []);
 
   const totalEditCount = useMemo(() => {
@@ -432,14 +699,14 @@ export default function PreviewEditor({ fileId, onClose }) {
     <div className="overlay">
       <div className="overlay-content wide preview-overlay" onClick={e => e.stopPropagation()}>
         <div className="overlay-header">
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <h2>Preview & Edit — Consolidated Report</h2>
             <span className="preview-badge">
               {sheetNames.length} sheet{sheetNames.length !== 1 ? 's' : ''}
               {sourceFileNames.length > 0 && ` · ${sourceFileNames.length} source`}
             </span>
           </div>
-          <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+          <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
             <button className="btn-sm" onClick={() => setZoom(z => Math.max(0.5, z - 0.1))} aria-label="Zoom out">−</button>
             <span className="preview-zoom-label">{Math.round(zoom * 100)}%</span>
             <button className="btn-sm" onClick={() => setZoom(z => Math.min(2, z + 0.1))} aria-label="Zoom in">+</button>
@@ -493,12 +760,21 @@ export default function PreviewEditor({ fileId, onClose }) {
               <div className="preview-issue-bar">
                 <span className="preview-issue-count">{allIssues.length}</span>
                 <span>issue{allIssues.length !== 1 ? 's' : ''}</span>
-                <div className="preview-issue-breakdown">
-                  {Object.entries(issueCountByCol).slice(0, 5).map(([col, cnt]) => (
-                    <span key={col} className="preview-issue-col-count">{col}: {cnt}</span>
-                  ))}
-                  {Object.keys(issueCountByCol).length > 5 && (
-                    <span className="preview-issue-col-count">+{Object.keys(issueCountByCol).length - 5} more</span>
+                <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                  {issueTypeCounts.missing > 0 && (
+                    <span className="issue-type-badge issue-type-missing" title="Missing values">{issueTypeCounts.missing} missing</span>
+                  )}
+                  {issueTypeCounts.outlier > 0 && (
+                    <span className="issue-type-badge issue-type-outlier" title="Statistical outliers">{issueTypeCounts.outlier} outlier</span>
+                  )}
+                  {issueTypeCounts.pattern > 0 && (
+                    <span className="issue-type-badge issue-type-pattern" title="Pattern mismatches">{issueTypeCounts.pattern} pattern</span>
+                  )}
+                  {issueTypeCounts.inconsistency > 0 && (
+                    <span className="issue-type-badge issue-type-inconsistency" title="Data inconsistencies">{issueTypeCounts.inconsistency} inconsistent</span>
+                  )}
+                  {issueTypeCounts.warning > 0 && (
+                    <span className="issue-type-badge" title="Validation warnings">{issueTypeCounts.warning} warning</span>
                   )}
                 </div>
                 <button className={`btn-sm preview-issue-filter ${showIssuesOnly ? 'active' : ''}`}
@@ -521,11 +797,16 @@ export default function PreviewEditor({ fileId, onClose }) {
                 <table className="preview-table" style={{ fontSize: `${0.8 * zoom}rem` }}>
                   <thead>
                     <tr>
-                      <th className="preview-rownum" style={{ minWidth: '52px', width: '52px' }}>#</th>
+                      <th className="preview-rownum" style={{ minWidth: '36px', width: '36px' }}>#</th>
                       {headers.map(h => (
                         <th key={h}>
                           <div className="preview-th-content">
                             <span className="preview-th-label" title={h}>{h}</span>
+                            {issueCountByCol[h] > 0 && (
+                              <span className="preview-col-issue-badge" title={`${issueCountByCol[h]} issue(s) in this column`}>
+                                {issueCountByCol[h]}
+                              </span>
+                            )}
                             <div className="preview-th-actions">
                               <button className="preview-bulk-btn"
                                 onClick={e => { e.stopPropagation(); setBulkCol(bulkCol === h ? null : h); }}>⋮</button>
@@ -546,16 +827,19 @@ export default function PreviewEditor({ fileId, onClose }) {
                     {displayRows.length === 0 && (
                       <tr><td colSpan={headers.length + 1} style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)' }}>No matching rows</td></tr>
                     )}
-                    {displayRows.map((row, ri) => (
-                      <PreviewRow key={ri} row={row} ri={ri}
-                        headers={headers} zoom={zoom} issues={issues}
-                        cellChanges={cellChanges} focusedCell={focusedCell}
-                        hasIssue={hasIssue} isCellEdited={isCellEdited}
-                        rowIssueCount={rowIssueCount} rowEditCount={rowEditCount}
-                        updateCell={updateCell} resetCell={resetCell}
-                        handleCellClick={handleCellClick} handleKeyNav={handleKeyNav}
-                        setFocusedCell={setFocusedCell} />
-                    ))}
+                    {displayRows.map((row, ri) => {
+                      const actualRi = (currentEdits.rows || rows).indexOf(row);
+                      return (
+                        <PreviewRow key={ri} row={row} ri={actualRi}
+                          headers={headers} zoom={zoom} issues={consolidatedIssues}
+                          cellChanges={cellChanges} focusedCell={focusedCell}
+                          hasIssue={hasIssue} isCellEdited={isCellEdited}
+                          rowIssueCount={rowIssueCount} rowEditCount={rowEditCount}
+                          updateCell={updateCell} resetCell={resetCell}
+                          handleCellClick={handleCellClick} handleKeyNav={handleKeyNav}
+                          setFocusedCell={setFocusedCell} />
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -567,6 +851,14 @@ export default function PreviewEditor({ fileId, onClose }) {
                     <button className="overlay-close" onClick={() => setShowWarningSidebar(false)} aria-label="Close warning sidebar">✕</button>
                   </div>
                   <div className="preview-warning-sidebar-body">
+                    <div className="preview-warning-detail-row">
+                      <span className="preview-warning-detail-label">Issue Type</span>
+                      <span className="preview-warning-detail-value" style={{ textTransform: 'capitalize' }}>
+                        <span className={`issue-type-badge issue-type-${selectedWarning.type || 'warning'}`}>
+                          {selectedWarning.type || 'warning'}
+                        </span>
+                      </span>
+                    </div>
                     <div className="preview-warning-detail-row">
                       <span className="preview-warning-detail-label">Row</span>
                       <span className="preview-warning-detail-value">{selectedWarning.row + 1}</span>
@@ -621,7 +913,7 @@ export default function PreviewEditor({ fileId, onClose }) {
                 </div>
               )}
 
-              <SourceSheetView headers={srcHeaders} rows={srcRows} />
+              <SourceSheetView headers={srcHeaders} rows={srcRows} issues={sourceIssues} />
             </>
           )
         )}
@@ -633,10 +925,11 @@ export default function PreviewEditor({ fileId, onClose }) {
             )}
           </div>
           <div className="preview-footer-right">
-            <button className="btn-secondary" onClick={handleClose}>Close</button>
+            <button className="btn-secondary" onClick={handleClose} disabled={saving}>Close</button>
             {mode === 'consolidated' && (
-              <button className="btn-download" disabled={saving || loading} onClick={handleSave}>
-                {saving ? "Saving..." : "Save & Download"}
+              <button className="btn-primary" disabled={saving || loading || saveDone} onClick={handleSave}
+                style={{ background: saveDone ? 'var(--accent-success)' : undefined, borderColor: saveDone ? 'var(--accent-success)' : undefined }}>
+                {saveDone ? "✓ Saved & Downloaded" : saving ? "Saving..." : "Save & Download"}
               </button>
             )}
           </div>

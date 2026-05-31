@@ -4,8 +4,12 @@ import tempfile
 import uuid
 import sys
 import io
+import json
+import urllib.request
+import asyncio
 from io import StringIO
 from typing import List, Dict, Any
+from datetime import datetime, date
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import FileResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,7 +19,6 @@ from src.main import execute_e2e_consolidation
 
 app = FastAPI(title="Consolidation Pipeline API")
 
-# Enable CORS for frontend development
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -24,10 +27,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Compress JSON responses (schema lists, preview data, audit logs)
 app.add_middleware(GZipMiddleware, minimum_size=500)
-
-from datetime import datetime
 
 base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 frontend_dist = os.path.join(base_dir, "frontend", "dist")
@@ -202,7 +202,7 @@ async def consolidate(files: List[UploadFile] = File(...)):
 
 @app.get("/api/download/{file_id}")
 async def download_file(file_id: str):
-    entry = FILE_STORE.pop(file_id, None)
+    entry = FILE_STORE.get(file_id)
     if entry is None:
         raise HTTPException(status_code=404, detail="File not found or already downloaded")
     file_bytes = entry["bytes"] if isinstance(entry, dict) else entry
@@ -350,6 +350,23 @@ async def list_schemas():
     return {"schemas": results}
 
 
+@app.get("/api/schemas/all-details")
+async def get_all_schemas_details():
+    """Get full schema details for all templates in a single batch request."""
+    results = []
+    if not os.path.isdir(SCHEMAS_DIR):
+        return {"schemas": results}
+    for f in sorted(os.listdir(SCHEMAS_DIR)):
+        if f.endswith((".yaml", ".yml")):
+            fp = os.path.join(SCHEMAS_DIR, f)
+            try:
+                data = _read_schema_yaml(fp)
+                results.append(data)
+            except Exception as e:
+                pass
+    return {"schemas": results}
+
+
 @app.get("/api/schemas/{client_id}")
 async def get_schema(client_id: str):
     """Get full schema definition by client_id."""
@@ -430,6 +447,196 @@ async def clear_batches():
     return {"success": True}
 
 
+# ──────────────────────────────────────────────
+# CELL QUALITY ANALYSIS
+# ──────────────────────────────────────────────
+
+import re
+from collections import Counter
+
+
+def _infer_column_type(values: list) -> str:
+    """Infer the dominant type of a column from sampled values."""
+    scores = {"numeric": 0, "date": 0, "code": 0, "text": 0}
+    for v in values:
+        if v is None or str(v).strip() == "":
+            continue
+        s = str(v).strip()
+        # Phone numbers: treat as text, never as code or numeric
+        if re.match(r'^\+?[\d\s\-\(\)]{7,15}$', s) and re.search(r'\d{7,}', s.replace(" ", "").replace("-", "").replace("(", "").replace(")", "")):
+            scores["text"] += 1
+        elif re.match(r'^\d{1,3}(,\d{3})*(\.\d+)?$', s) or re.match(r'^-?\d+(\.\d+)?$', s):
+            scores["numeric"] += 1
+        elif re.match(r'^\d{4}[-/]\d{1,2}[-/]\d{1,2}', s) or re.match(r'^\d{1,2}[-/]\d{1,2}[-/]\d{2,4}', s):
+            scores["date"] += 1
+        elif re.match(r'^[A-Za-z]{2,6}\d{2,10}$', s) or re.match(r'^(?=.*[A-Za-z])(?=.*\d)[A-Za-z0-9]{4,12}$', s):
+            scores["code"] += 1
+        else:
+            scores["text"] += 1
+    total = sum(scores.values())
+    if total == 0:
+        return "unknown"
+    best = max(scores, key=scores.get)
+    return best if scores[best] / total > 0.5 else "mixed"
+
+
+def _is_missing(val) -> bool:
+    if val is None:
+        return True
+    s = str(val).strip()
+    if s == "" or s == "-" or s == "—" or s == "N/A" or s == "n/a" or s == "NA" or s == "null" or s == "None":
+        return True
+    if re.match(r'^[Nn][.\s]?[Aa]$', s) or s.lower() in ("nan", "none", "nil", "na"):
+        return True
+    return False
+
+
+def _is_date_string(s: str) -> bool:
+    return bool(re.match(r'^\d{4}[-/]\d{1,2}[-/]\d{1,2}', s) or re.match(r'^\d{1,2}[-/]\d{1,2}[-/]\d{2,4}', s))
+
+
+def _is_numeric_string(s: str) -> bool:
+    s = s.replace(",", "").replace("%", "").strip()
+    try:
+        float(s)
+        return True
+    except ValueError:
+        return False
+
+
+def _get_numeric_value(s: str) -> float | None:
+    try:
+        return float(s.replace(",", "").replace("%", "").strip())
+    except (ValueError, AttributeError):
+        return None
+
+
+def analyze_cell_quality(headers: list, rows: list) -> dict:
+    """Return a dict ri -> col -> {"type": str, "message": str} for every problematic cell."""
+    issue_map: dict = {}
+    if not headers or not rows:
+        return issue_map
+
+    # Pre-scan: infer column types and collect numeric values for outlier detection
+    col_types = {}
+    col_numeric_values: dict[str, list] = {}
+    col_format_patterns: dict[str, Counter] = {}
+    col_zero_counts: dict[str, int] = {}
+    col_non_missing_counts: dict[str, int] = {}
+
+    for ci, h in enumerate(headers):
+        values = [row.get(h) for row in rows]
+        col_types[h] = _infer_column_type(values)
+        # Collect zero and non-missing counts for suspicious-zero detection
+        col_zero_counts[h] = sum(1 for v in values if v is not None and str(v).strip() in ("0", "0.0", "0.00"))
+        col_non_missing_counts[h] = sum(1 for v in values if v is not None and str(v).strip() != "")
+        # Collect numeric values for outlier detection
+        if col_types[h] in ("numeric", "mixed"):
+            nums = []
+            for v in values:
+                n = _get_numeric_value(str(v)) if v is not None else None
+                if n is not None:
+                    nums.append(n)
+            if len(nums) >= 4:
+                # Check if this is likely a phone/ID column (all values are 7+ digit integers with no decimal)
+                # Phone numbers stored as raw integers should NOT get outlier detection
+                phone_like_count = sum(1 for n in nums if n >= 10_000_000 and n == int(n) and n == round(n, 0))
+                if phone_like_count >= len(nums) * 0.8:
+                    continue  # skip phone/ID columns
+                # Check if this is a sequential index column (e.g., S.no, serial numbers)
+                # Signature: all integers, nearly all unique, range ≈ count-1
+                int_count = sum(1 for n in nums if n == int(n) and n == round(n, 0))
+                if int_count == len(nums):
+                    unique_vals = set(int(n) for n in nums)
+                    if len(unique_vals) >= len(nums) * 0.9:
+                        mn, mx = min(unique_vals), max(unique_vals)
+                        if len(unique_vals) > 1 and (mx - mn) / (len(unique_vals) - 1) >= 0.85:
+                            continue  # skip sequential index columns
+                col_numeric_values[h] = nums
+        # Collect format patterns for text/code columns
+        if col_types[h] in ("code", "text"):
+            pattern_counts = Counter()
+            for v in values:
+                if v is not None and str(v).strip():
+                    s = str(v).strip()
+                    # Create a pattern signature: all letters → "X" (case-insensitive)
+                    sig = ""
+                    for ch in s:
+                        if ch.isalpha():
+                            sig += "X"
+                        elif ch.isdigit():
+                            sig += "0"
+                        else:
+                            sig += ch
+                    pattern_counts[sig] += 1
+            if pattern_counts:
+                col_format_patterns[h] = pattern_counts
+
+    # Per-row analysis
+    for ri, row in enumerate(rows):
+        for ci, h in enumerate(headers):
+            # Skip columns that come directly from financial institutions (always correct)
+            if re.search(r'ifsc', h, re.IGNORECASE):
+                continue
+            val = row.get(h)
+            cell_issues = []
+
+            # 1. Missing check
+            if _is_missing(val):
+                cell_issues.append(("missing", "Cell is empty"))
+
+            # 2. Pattern check (skip phone-like values to avoid false positives)
+            if not _is_missing(val) and col_types.get(h) in ("date", "numeric", "code", "text"):
+                s = str(val).strip()
+                is_phone_like = re.match(r'^\+?[\d\s\-\(\)]{6,}$', s) and len(re.findall(r'\d', s)) >= 7
+                if col_types[h] == "date" and not _is_date_string(s) and not isinstance(val, (date, datetime)):
+                    cell_issues.append(("pattern", f"Expected date format, got '{s[:30]}'"))
+                elif col_types[h] == "numeric" and not _is_numeric_string(s) and not is_phone_like:
+                    cell_issues.append(("pattern", f"Expected numeric value, got '{s[:30]}'"))
+                elif col_types[h] in ("code", "text") and not is_phone_like:
+                    # Flag suspicious zero values (0 used as placeholder for missing data)
+                    if s in ("0", "0.0", "0.00") and col_zero_counts.get(h, 0) < col_non_missing_counts.get(h, 0) * 0.3:
+                        cell_issues.append(("pattern", f"Suspicious zero value in {h}, expected text or code"))
+                    elif col_types[h] == "text" and re.match(r'^\d+(\.\d+)?$', s) and s not in ("0", "0.0", "0.00"):
+                        cell_issues.append(("pattern", f"Numeric value '{s[:20]}' in text column"))
+                    elif col_types[h] == "code" and col_format_patterns.get(h):
+                        # Skip sentinel values like N.A, N/A, NA, -, etc.
+                        if re.match(r'^[Nn][./]?[Aa]$|^[-—]$|^null$|^none$|^nil$|^\.$|^[Nn]a[Nn]$', s):
+                            pass
+                        else:
+                            # Generate normalized pattern sig (all letters → X)
+                            sig = "".join("X" if ch.isalpha() else "0" if ch.isdigit() else ch for ch in s)
+                            dominant_pattern = col_format_patterns[h].most_common(1)[0][0]
+                            dominant_count = col_format_patterns[h][dominant_pattern]
+                            total_patterns = sum(col_format_patterns[h].values())
+                            if sig != dominant_pattern and dominant_count / total_patterns > 0.6 and total_patterns >= 5:
+                                cell_issues.append(("pattern", f"Format '{s[:20]}' differs from column pattern '{dominant_pattern}'"))
+
+            # 3. Outlier check — disabled: too many false positives for financial data
+            # (natural variance in payment amounts and counts is legitimate, not anomalous)
+            pass
+
+            # 4. Inconsistency check (mixed-format columns)
+            if not _is_missing(val) and col_types.get(h) == "mixed":
+                s = str(val).strip()
+                if _is_numeric_string(s) and not _is_date_string(s):
+                    pass  # numeric in mixed column is fine
+                elif _is_date_string(s):
+                    pass  # date in mixed column is fine
+                else:
+                    cell_issues.append(("inconsistency", f"Value '{s[:30]}' doesn't match column's dominant types"))
+
+            if cell_issues:
+                if ri not in issue_map:
+                    issue_map[ri] = {}
+                # Keep the most severe issue per cell (missing > outlier > pattern > inconsistency)
+                severity = {"missing": 0, "outlier": 1, "pattern": 2, "inconsistency": 3}
+                best = min(cell_issues, key=lambda x: severity.get(x[0], 9))
+                issue_map[ri][h] = {"type": best[0], "message": best[1]}
+
+    return issue_map
+
+
 @app.get("/api/preview/{file_id}")
 async def preview_file(file_id: str):
     """Return the consolidated Excel data as JSON with cell-level issue highlights."""
@@ -476,7 +683,38 @@ async def preview_file(file_id: str):
                             issue_map.setdefault(row_idx, {})[field] = w.get("message", "")
             has_issues = bool(issue_map)
             sheets[name] = {"headers": headers, "rows": rows, "issues": issue_map, "has_issues": has_issues}
+
+        # Run comprehensive quality analysis on every sheet (merges with existing warnings)
+        for name, sheet_data in sheets.items():
+            quality_issues = analyze_cell_quality(sheet_data["headers"], sheet_data["rows"])
+            existing = sheet_data.get("issues", {})
+            for ri, cols in quality_issues.items():
+                for col, info in cols.items():
+                    if ri not in existing:
+                        existing[ri] = {}
+                    # Don't overwrite more severe existing issue
+                    if col not in existing[ri]:
+                        existing[ri][col] = info
+                    else:
+                        # Merge: if existing is plain string, convert to dict preserving type
+                        old = existing[ri][col]
+                        if isinstance(old, str):
+                            existing[ri][col] = {"type": "warning", "message": old}
+            sheet_data["issues"] = existing
+            sheet_data["has_issues"] = any(bool(v) for v in existing.values())
+
         wb.close()
+
+        # Run quality analysis on source file sheets too (backend-driven)
+        for fname, fdata in sources.items():
+            if isinstance(fdata, dict) and "error" not in fdata:
+                for sname, sdata in fdata.items():
+                    if isinstance(sdata, dict) and "headers" in sdata and "rows" in sdata:
+                        src_quality = analyze_cell_quality(sdata["headers"], sdata["rows"])
+                        # Convert int keys to string for JSON serialisation
+                        sdata["issues"] = {str(k): v for k, v in src_quality.items()}
+                        sdata["has_issues"] = bool(src_quality)
+
         return {"sheets": sheets, "file_id": file_id, "sources": sources}
     except HTTPException:
         raise
@@ -649,6 +887,269 @@ async def canonical_fields():
     for d in defaults:
         fields.add(d)
     return {"fields": sorted(fields)}
+
+
+def get_consolidated_headers(sheet_name: str) -> List[str]:
+    filepath = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "Feb'26 consolidated.xlsx")
+    if not os.path.exists(filepath):
+        return []
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(filepath, read_only=True)
+        target = sheet_name.lower().strip()
+        matched = next((name for name in wb.sheetnames if name.lower().strip() == target), None)
+        if not matched:
+            wb.close()
+            return []
+        ws = wb[matched]
+        row = next(ws.iter_rows(max_row=1, values_only=True), [])
+        wb.close()
+        return [str(c).strip() for c in row if c is not None and str(c).strip()]
+    except Exception:
+        return []
+
+
+def get_consolidated_preview(sheet_name: str, max_rows: int = 20) -> dict:
+    """Return headers + up to max_rows of sample data from the consolidated report."""
+    filepath = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "Feb'26 consolidated.xlsx")
+    if not os.path.exists(filepath):
+        return {"headers": [], "rows": [], "matched_sheet": ""}
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(filepath, read_only=True, data_only=True)
+        target = sheet_name.lower().strip()
+        matched = next((name for name in wb.sheetnames if name.lower().strip() == target), None)
+        if not matched:
+            wb.close()
+            return {"headers": [], "rows": [], "matched_sheet": ""}
+        ws = wb[matched]
+        rows_iter = ws.iter_rows(values_only=True)
+        header_row = next(rows_iter, [])
+        headers = [str(c).strip() if c is not None else "" for c in header_row]
+        sample_rows = []
+        for _ in range(max_rows):
+            try:
+                row = next(rows_iter)
+                row_dict = {}
+                for i, val in enumerate(row):
+                    if i < len(headers) and headers[i]:
+                        if val is not None and str(val).strip():
+                            row_dict[headers[i]] = str(val).strip()
+                if row_dict:
+                    sample_rows.append(row_dict)
+            except StopIteration:
+                break
+        wb.close()
+        return {"headers": headers, "rows": sample_rows, "matched_sheet": matched}
+    except Exception:
+        return {"headers": [], "rows": [], "matched_sheet": ""}
+
+
+def list_consolidated_sheets() -> List[str]:
+    """Return all sheet names in the consolidated report."""
+    filepath = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "Feb'26 consolidated.xlsx")
+    if not os.path.exists(filepath):
+        return []
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(filepath, read_only=True)
+        names = list(wb.sheetnames)
+        wb.close()
+        return names
+    except Exception:
+        return []
+
+
+@app.get("/api/consolidated-headers")
+async def consolidated_headers():
+    """Return per-sheet headers from the consolidated report."""
+    filepath = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "Feb'26 consolidated.xlsx")
+    result = {}
+    if not os.path.exists(filepath):
+        return result
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(filepath, read_only=True)
+        for sname in wb.sheetnames:
+            ws = wb[sname]
+            row = next(ws.iter_rows(values_only=True), [])
+            headers = [str(c).strip() for c in row if c is not None and str(c).strip()]
+            result[sname] = headers
+        wb.close()
+    except Exception:
+        pass
+    return result
+
+
+@app.get("/api/consolidated-preview")
+async def consolidated_preview(sheet_name: str = ""):
+    """Return headers + sample rows from the consolidated report for a given sheet."""
+    if not sheet_name:
+        return {"headers": [], "rows": []}
+    return get_consolidated_preview(sheet_name, max_rows=20)
+
+
+@app.get("/api/consolidated-sheets")
+async def consolidated_sheets():
+    """List available sheets in the consolidated report for target selection."""
+    sheets = list_consolidated_sheets()
+    return {"sheets": sheets}
+
+
+@app.post("/api/ai-auto-match")
+async def ai_auto_match(data: dict):
+    sheet_name = data.get("sheet_name", "").strip()
+    filename = data.get("filename", "").strip()
+    client_columns = data.get("columns", [])
+    client_preview = data.get("preview", [])
+    api_key = data.get("api_key", "").strip()
+
+    if not api_key:
+        raise HTTPException(400, "Gemini API Key is required")
+
+    # Get target headers + preview rows from the consolidated report.
+    # If the source sheet name doesn't match any target sheet, try all available sheets.
+    target_info = get_consolidated_preview(sheet_name, max_rows=20)
+    if not target_info["headers"]:
+        all_sheets = list_consolidated_sheets()
+        if all_sheets:
+            # Use the first available target sheet
+            target_info = get_consolidated_preview(all_sheets[0], max_rows=20)
+            sheet_name = target_info["matched_sheet"] or all_sheets[0]
+        else:
+            sheet_name = "Payment Tracker"
+
+    target_headers = target_info["headers"]
+    target_preview = target_info["rows"]
+
+    if not target_headers:
+        # Fallback to standard defaults when consolidated file is unavailable
+        target_headers = [
+            "S.no", "Sr No", "Client", "Assayer Name", "Assayer Code", "Assayer Phone",
+            "Assayer PAN", "Location", "State", "Zone", "Branch", "Branch Code",
+            "Month", "Audit Month & Year", "Type of Audit", "No. of Visits",
+            "Base Audit Fee", "Total pay (Base)", "Travel charges",
+            "Cancelled visits", "Branch Cancellation Charges",
+            "Andaman & Nicobar Branch Expenses", "Error Deduction",
+            "Total pay", "Remarks", "PAN Number", "Bank Name",
+            "A/c Number", "IFSC Code", "Schedule date", "Audit Status",
+            "Audit completion date", "No of days audited", "No of Packets audited",
+            "Client fee", "Additional", "Final Client Fees", "Assayer fee",
+            "Additional fee", "Distance", "Base Location", "Cancelled",
+            "Total", "Audit Remarks", "Contact Person", "SOL ID",
+        ]
+
+    target_rows_json = json.dumps(target_preview[:10], indent=2)
+    client_rows_json = json.dumps(client_preview[:20], indent=2)
+
+    prompt = f"""You are an expert data migration and Excel consolidation architect.
+
+We are building a mapping template that maps columns in a raw client Excel sheet to standard "target" database columns of a consolidated report.
+
+=== CONTEXT ===
+Active worksheet: "{sheet_name}"
+Uploaded filename: "{filename}"
+
+=== TARGET (Standard Database) ===
+Target column headers:
+{json.dumps(target_headers)}
+
+Sample data rows from the TARGET (consolidated report) to show you the expected format, data patterns, and values:
+{target_rows_json}
+
+=== SOURCE (Uploaded Client Excel) ===
+Source column headers from uploaded file:
+{json.dumps(client_columns)}
+
+Sample data rows from the SOURCE (client file):
+{client_rows_json}
+
+=== YOUR TASK ===
+Analyze the source columns AND their sample data, then compare them against the target columns and their sample data. For each target column, determine:
+
+1. **mappings**: Which source column (if any) should map to this target column? Consider:
+   - Column name similarity (e.g. "Branch" ≈ "BRANCH", "A/C No." ≈ "A/c Number")
+   - Data pattern matching (PAN numbers follow "ABCDE1234F" format, IFSC has 11 chars, phone numbers are 10 digits, dates look like "dd-mm-yyyy")
+   - Value ranges and context (e.g. "50000" in "Total pay" column vs "50000" in "Branch Code" — context matters!)
+   - **CRITICAL — DO NOT force a match:** If a target column has NO corresponding source column, leave the mapping as "" (empty string). Never map a column that doesn't semantically belong.
+
+2. **rules**: For each target column, determine:
+   - "datatype": "string" | "integer" | "decimal" | "date" | "time" — infer from the TARGET sample data
+   - "mandatory": true if the column is critical (primary keys, IDs, names, financial totals). False for optional columns.
+   - "default_value": If the source lacks this column, suggest a sensible default:
+     * For financial columns: "0.0"
+     * For text columns: "" (empty) unless it can be derived (e.g. "Client" might default to "Axis Bank POA" if data is from Axis Bank)
+     * Do NOT fabricate data — use "" when unsure
+   - "copy_from_column": Very important — if the source lacks this target column, can it borrow its value from ANOTHER target column's mapped source? Examples:
+     * Target "Location" is missing in source → if "State" exists, consider copying from "State" ONLY if the data pattern matches (e.g. state names are short, city names are different)
+     * Target "Branch Code" missing → if "SOL ID" or "Branch" exists, consider it
+     * **DO NOT** suggest copy_from_column for unrelated columns
+
+=== TRICKY CASES — HANDLE THESE CORRECTLY ===
+1. **Client name from filename**: The `client` / `Client` target column is often missing in source files. Derive it from the uploaded filename (e.g. "Axis Bank POA Payment Tracker - Feb'26.xlsx" → client = "Axis Bank POA", "RBL(Muthoot Fincorp) Payment Tracker -Feb'26.xlsx" → client = "RBL Muthoot Fincorp POA"). Set as `default_value`.
+2. **City vs State**: If source has "State" but NOT "City/Location", do NOT map State → Location. These are different concepts. Leave Location empty or suggest copy_from_column ONLY if the target data clearly shows location values match state names.
+3. **Amount columns**: Multiple financial columns may have similar values. Use the TARGET sample to understand which amount goes where (e.g. "Total pay" vs "Base Audit Fee" vs "Travel charges").
+4. **Code columns**: "SOL ID", "Branch Code", "Assayer Code" may look similar (alphanumeric codes). Check the sample data patterns to distinguish them.
+5. **Phone vs PAN vs IFSC**: These all look like text but have distinct patterns — PAN is 10 chars (5 letters + 4 digits + 1 letter), IFSC is 11 chars (4 letters + 0 + 6 digits), Phone is 10 digits. Use sample data to tell them apart.
+6. **Date columns**: Multiple date columns may exist (Schedule date, Audit completion date). Use the TARGET data to understand which is which based on the date ranges and context.
+7. **Split columns**: Some source files split target columns (e.g. "Branch Code" + "BranchName" → target "SOL ID" + "BRANCH"). Map each to the best match using data patterns.
+8. **Missing columns**: If source simply doesn't have a target column, leave mapping as "". Don't force a match.
+
+Return ONLY valid JSON with this exact structure (no markdown, no explanation):
+{{
+  "mappings": {{
+    "Target Column 1": "Source Column 1 or empty string",
+    "Target Column 2": "Source Column 2 or empty string"
+  }},
+  "rules": {{
+    "Target Column 1": {{
+      "datatype": "string | integer | decimal | date | time",
+      "mandatory": true | false,
+      "default_value": "suggested default or empty string",
+      "copy_from_column": "Other target column name or empty string"
+    }}
+  }}
+}}
+"""
+
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+    headers = {
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "contents": [{
+            "parts": [{"text": prompt}]
+        }],
+        "generationConfig": {
+            "responseMimeType": "application/json"
+        }
+    }
+
+    try:
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers=headers,
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=60) as response:
+            res_body = response.read().decode("utf-8")
+            res_json = json.loads(res_body)
+
+            if "candidates" not in res_json or not res_json["candidates"]:
+                raise HTTPException(502, f"Gemini response has no candidates: {res_json}")
+
+            text_out = res_json["candidates"][0]["content"]["parts"][0]["text"]
+            mapping_result = json.loads(text_out)
+            return {
+                "success": True,
+                "mappings": mapping_result.get("mappings", {}),
+                "rules": mapping_result.get("rules", {}),
+                "target_headers": target_headers,
+                "matched_sheet": target_info.get("matched_sheet", sheet_name)
+            }
+    except Exception as e:
+        raise HTTPException(502, f"AI Auto-Match failed: {str(e)}")
 
 
 @app.post("/api/schemas/from-mapping")

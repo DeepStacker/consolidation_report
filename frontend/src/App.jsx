@@ -44,15 +44,17 @@ export default function App() {
             className={`nav-tab ${tab === "schemas" ? "active" : ""}`}
             onClick={() => switchTab("schemas")}
           >
-            Schema Manager
+            Excel Templates (Schemas)
           </button>
         </div>
       </nav>
       <main className="app-main">
-        <Suspense fallback={<Fallback />}>
-          {tab === "consolidate" && <ConsolidateView />}
-          {tab === "schemas" && <SchemaManager />}
-        </Suspense>
+        <div className="container">
+          <Suspense fallback={<Fallback />}>
+            {tab === "consolidate" && <ConsolidateView />}
+            {tab === "schemas" && <SchemaManager />}
+          </Suspense>
+        </div>
       </main>
     </div>
   );
