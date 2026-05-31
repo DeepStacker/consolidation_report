@@ -16,6 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from src.main import execute_e2e_consolidation
+from src.models.domain_models import SchemaDefinition
 
 app = FastAPI(title="Consolidation Pipeline API")
 
@@ -48,6 +49,13 @@ if os.path.exists(env_path):
 # No data is written to persistent disk outside the ephemeral workspace.
 FILE_STORE: Dict[str, dict] = {}  # { file_id: {"bytes": bytes, "audit": dict} }
 BATCH_STORE: List[dict] = []  # ordered list of batch records
+MAX_FILE_STORE = 50  # max files kept in memory
+
+def _trim_file_store():
+    """Remove oldest entries when FILE_STORE exceeds MAX_FILE_STORE."""
+    while len(FILE_STORE) > MAX_FILE_STORE:
+        oldest = next(iter(FILE_STORE))
+        del FILE_STORE[oldest]
 
 class LogCapture:
     def __init__(self):
@@ -178,6 +186,7 @@ async def consolidate(files: List[UploadFile] = File(...)):
 
         # Store file bytes + audit data together
         FILE_STORE[file_id] = {"bytes": file_bytes, "audit": audit_data, "sources": source_data}
+        _trim_file_store()
 
         # Create batch record for run history
         batch_record = {
@@ -414,6 +423,11 @@ async def update_schema(client_id: str, data: dict):
         os.remove(fp)
         _clear_schema_cache()
         fp = os.path.join(SCHEMAS_DIR, f"{new_id}.yaml")
+    # Validate schema before writing
+    try:
+        SchemaDefinition.model_validate(data)
+    except Exception as e:
+        raise HTTPException(422, f"Schema validation failed: {str(e)}")
     _write_schema_yaml(fp, data)
     return {"success": True, "client_id": new_id or client_id}
 
@@ -889,6 +903,7 @@ async def save_preview(file_id: str, data: dict):
     buf.seek(0)
     new_id = str(uuid.uuid4())
     FILE_STORE[new_id] = {"bytes": buf.getvalue(), "audit": entry.get("audit", {}) if isinstance(entry, dict) else {}, "sources": entry.get("sources", {}) if isinstance(entry, dict) else {}}
+    _trim_file_store()
     wb.close()
     return {"success": True, "file_id": new_id}
 
@@ -1521,6 +1536,11 @@ async def create_schema_from_mapping(data: dict):
 
     fp = os.path.join(SCHEMAS_DIR, f"{client_id}.yaml")
     os.makedirs(SCHEMAS_DIR, exist_ok=True)
+    # Validate schema before writing — catches structural issues early
+    try:
+        SchemaDefinition.model_validate(schema)
+    except Exception as e:
+        raise HTTPException(422, f"Schema validation failed: {str(e)}")
     _write_schema_yaml(fp, schema)
     return {"success": True, "client_id": client_id, "filename": f"{client_id}.yaml"}
 

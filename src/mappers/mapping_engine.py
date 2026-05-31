@@ -142,6 +142,17 @@ def map_sheet_records(raw_records: List[Dict[str, Any]],
                     
             if raw_key_found is not None:
                 raw_value = row[raw_key_found]
+            elif col_def.copy_from_column:
+                # Copy value from another mapped column (e.g., Location ← State)
+                copy_raw = None
+                for raw, canonical in column_map.items():
+                    if canonical == col_def.copy_from_column:
+                        copy_raw = raw
+                        break
+                if copy_raw is not None:
+                    raw_value = row[copy_raw]
+                else:
+                    raw_value = col_def.default_value
             else:
                 # Value is missing in the source. Fall back to default
                 raw_value = col_def.default_value
