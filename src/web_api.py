@@ -1297,7 +1297,7 @@ Return ONLY valid JSON with this exact structure (no markdown, no explanation):
 
     res_body = None
     resolved_provider = None
-    last_error_msg = ""
+    error_list = []
 
     # Execute request with automatic fallback rotation
     for prov, key in queue:
@@ -1330,7 +1330,7 @@ Return ONLY valid JSON with this exact structure (no markdown, no explanation):
                     break
                 except Exception as e:
                     print(f"  [Groq] Model {model} failed: {str(e)}")
-                    last_error_msg = f"Groq ({model}) failed: {str(e)}"
+                    error_list.append(f"Groq ({model}): {str(e)}")
             if res_body:
                 break
 
@@ -1363,52 +1363,41 @@ Return ONLY valid JSON with this exact structure (no markdown, no explanation):
                     break
                 except Exception as e:
                     print(f"  [OpenRouter] Model {model} failed: {str(e)}")
-                    last_error_msg = f"OpenRouter ({model}) failed: {str(e)}"
+                    error_list.append(f"OpenRouter ({model}): {str(e)}")
             if res_body:
                 break
 
         elif prov == "gemini":
-            url_25 = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={key}"
-            url_15 = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={key}"
-            headers = {
-                "Content-Type": "application/json",
-                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            }
-            payload_25 = {
-                "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {"responseMimeType": "application/json"}
-            }
-            try:
-                req = urllib.request.Request(
-                    url_25,
-                    data=json.dumps(payload_25).encode("utf-8"),
-                    headers=headers,
-                    method="POST"
-                )
-                with urllib.request.urlopen(req, timeout=25) as response:
-                    res_body = response.read().decode("utf-8")
-                resolved_provider = "gemini"
-            except Exception as e_25:
-                print(f"  [Gemini] gemini-2.5-flash failed or timed out: {str(e_25)}. Falling back immediately to gemini-1.5-flash...")
+            for gemini_model in ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]:
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{gemini_model}:generateContent?key={key}"
+                headers = {
+                    "Content-Type": "application/json",
+                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                }
+                payload = {
+                    "contents": [{"parts": [{"text": prompt}]}],
+                }
+                if gemini_model != "gemini-1.5-flash":
+                    payload["generationConfig"] = {"responseMimeType": "application/json"}
                 try:
-                    payload_15 = {"contents": [{"parts": [{"text": prompt}]}]}
                     req = urllib.request.Request(
-                        url_15,
-                        data=json.dumps(payload_15).encode("utf-8"),
+                        url,
+                        data=json.dumps(payload).encode("utf-8"),
                         headers=headers,
                         method="POST"
                     )
                     with urllib.request.urlopen(req, timeout=25) as response:
                         res_body = response.read().decode("utf-8")
                     resolved_provider = "gemini"
-                except Exception as e_15:
-                    print(f"  [Gemini] gemini-1.5-flash failed: {str(e_15)}")
-                    last_error_msg = f"Gemini failed: {str(e_15)}"
+                    break
+                except Exception as e:
+                    print(f"  [Gemini] {gemini_model} failed: {str(e)}")
+                    error_list.append(f"Gemini ({gemini_model}): {str(e)}")
             if res_body:
                 break
 
     if not res_body:
-        raise HTTPException(502, f"AI Auto-Match failed: All available providers failed. Last error details: {last_error_msg}")
+        raise HTTPException(502, f"AI Auto-Match failed: All available providers failed. Errors: {' | '.join(error_list)}")
 
     try:
         res_json = json.loads(res_body)

@@ -65,6 +65,7 @@ sheets:
       - No of visits
       - No. of Visits
       default_value: '0'
+      copy_from_column: No of visits
       mandatory: true
     - canonical_name: Type of Audit
       datatype: string
@@ -73,44 +74,41 @@ sheets:
       default_value: AXIS Bank POA
       mandatory: true
     - canonical_name: Base Audit Fee
-      datatype: integer
+      datatype: decimal
       synonyms:
       - Base Audit Fee
       default_value: '0.0'
       mandatory: true
     - canonical_name: Total pay (Base)
-      datatype: integer
+      datatype: decimal
       synonyms:
       - Total pay (Base)
       default_value: '0.0'
       mandatory: true
     - canonical_name: Travel charges(If any)
-      datatype: integer
+      datatype: decimal
       synonyms:
       - Travel charges(If any)
       default_value: '0'
       mandatory: true
     - canonical_name: Cancelled visits
       datatype: integer
-      synonyms:
-      - Missed
-      - Cancelled visits
+      synonyms: []
       default_value: '0'
-      mandatory: true
     - canonical_name: Branch Cancellation Charges
-      datatype: integer
+      datatype: decimal
       synonyms: []
       default_value: '0'
     - canonical_name: Andaman & Nicobar Branch Expenses
-      datatype: integer
+      datatype: decimal
       synonyms: []
       default_value: '0'
     - canonical_name: Error Deduction
-      datatype: integer
+      datatype: decimal
       synonyms: []
       default_value: '0'
     - canonical_name: Total pay
-      datatype: integer
+      datatype: decimal
       synonyms:
       - Total pay
       default_value: '0.0'
@@ -229,13 +227,13 @@ sheets:
       - "Audit \ncompletion date"
       mandatory: true
     - canonical_name: Assayer Reporting time at Branch
-      datatype: string
+      datatype: time
       synonyms: []
     - canonical_name: Audit start time
-      datatype: string
+      datatype: time
       synonyms: []
     - canonical_name: Audit End Time
-      datatype: string
+      datatype: time
       synonyms: []
     - canonical_name: "No of days \naudited"
       datatype: integer
@@ -250,41 +248,40 @@ sheets:
       synonyms:
       - Total pouches suggested for audit
       - "No of Packets \naudited"
-      default_value: '0'
       mandatory: true
     - canonical_name: Additional Packet
       datatype: integer
       synonyms: []
       default_value: '0'
     - canonical_name: Client fee
-      datatype: integer
+      datatype: decimal
       synonyms:
       - Client Fees
       - Client fee
       default_value: '0'
       mandatory: true
     - canonical_name: Additional
-      datatype: integer
+      datatype: decimal
       synonyms:
       - Additonal
       - Additional
       default_value: '0'
       mandatory: true
     - canonical_name: Final Client Fees
-      datatype: integer
+      datatype: decimal
       synonyms:
       - Final Client Fees
       default_value: '0'
       mandatory: true
     - canonical_name: Assayer fee
-      datatype: integer
+      datatype: decimal
       synonyms:
       - Assayer Fees
       - Assayer fee
       default_value: '0'
       mandatory: true
     - canonical_name: Additional fee
-      datatype: integer
+      datatype: decimal
       synonyms:
       - Additional Fees
       - Additional fee
@@ -311,13 +308,11 @@ sheets:
       - Cancellation
       - Cancelled
       default_value: '0'
-      mandatory: true
     - canonical_name: Error Deduciton
       datatype: integer
       synonyms: []
-      default_value: '0'
     - canonical_name: Total
-      datatype: integer
+      datatype: decimal
       synonyms:
       - Total
       default_value: '0'
@@ -392,18 +387,18 @@ sheets:
       datatype: string
       synonyms: []
     - canonical_name: T & F Client fee
-      datatype: integer
+      datatype: decimal
       synonyms: []
       default_value: '0'
     - canonical_name: POA Client Fees
-      datatype: integer
+      datatype: decimal
       synonyms: []
       default_value: '0'
       copy_from_column: Client fee
     - canonical_name: 'Cancelled
 
         Client fee'
-      datatype: integer
+      datatype: decimal
       synonyms: []
       default_value: '0'
     - canonical_name: billing  remarks
