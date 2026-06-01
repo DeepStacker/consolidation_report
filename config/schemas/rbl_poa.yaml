@@ -86,9 +86,9 @@ sheets:
       datatype: decimal
       default_value: 0.0
       mandatory: true
-    - canonical_name: ' Travel charges(If any)'
+    - canonical_name: Travel charges(If any)
       synonyms:
-      - ' Travel charges(If any)'
+      - Travel charges(If any)
       - Travel charges(If any)
       - Travel charges
       datatype: decimal
@@ -106,9 +106,9 @@ sheets:
       datatype: decimal
       default_value: 0.0
       mandatory: false
-    - canonical_name: ' Andaman & Nicobar Branch Expenses'
+    - canonical_name: Andaman & Nicobar Branch Expenses
       synonyms:
-      - ' Andaman & Nicobar Branch Expenses'
+      - Andaman & Nicobar Branch Expenses
       - Andaman & Nicobar Branch Expenses
       datatype: decimal
       default_value: 0.0
@@ -210,9 +210,9 @@ sheets:
       - Branch Name
       datatype: string
       mandatory: true
-    - canonical_name: 'Location '
+    - canonical_name: Location
       synonyms:
-      - 'Location '
+      - Location
       - Location
       copy_from_column: State
       datatype: string
@@ -264,38 +264,38 @@ sheets:
       - Schedule date
       datatype: date
       mandatory: false
-    - canonical_name: "Audit \nStatus"
+    - canonical_name: Audit Status
       synonyms:
       - Audit Status
-      - "Audit \nStatus"
+      - Audit Status
       datatype: string
       mandatory: false
-    - canonical_name: "Audit \ncompletion date"
+    - canonical_name: Audit completion date
       synonyms:
       - End Date
-      - "Audit \ncompletion date"
+      - Audit completion date
       - Audit completion date
       datatype: date
       mandatory: false
-    - canonical_name: "No of days \naudited "
+    - canonical_name: No of days audited
       synonyms:
       - No. of Visit
-      - "No of days \naudited "
+      - No of days audited
       - No of days audited
       datatype: integer
       default_value: 0
       mandatory: false
-    - canonical_name: "No of days \naudited For client"
+    - canonical_name: No of days audited For client
       synonyms:
       - No. of Visit
-      - "No of days \naudited For client"
+      - No of days audited For client
       - No of days audited For client
       datatype: integer
       default_value: 0
       mandatory: false
-    - canonical_name: "No of Packets \naudited"
+    - canonical_name: No of Packets audited
       synonyms:
-      - "No of Packets \naudited"
+      - No of Packets audited
       - No of Packets audited
       datatype: integer
       default_value: 0
@@ -438,7 +438,7 @@ sheets:
       datatype: integer
       default_value: 0
       mandatory: false
-    - canonical_name: 'Actual Audited (except already audited & A/C closed) '
+    - canonical_name: Actual Audited (except already audited & A/C closed)
       synonyms:
       - Actual Audited (except already audited & A/C closed)
       datatype: integer

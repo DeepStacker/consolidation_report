@@ -1937,6 +1937,54 @@ button {
   color: #fff;
 }
 
+/* ── Column selection ── */
+.preview-table thead th.col-selected {
+  background: #1a2a4a;
+  box-shadow: inset 0 -2px 0 var(--accent-primary);
+}
+
+.preview-table td.col-selected {
+  background: rgba(59, 130, 246, 0.06);
+}
+
+.preview-table td.cell-focused {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: -1px;
+  background: rgba(59, 130, 246, 0.1);
+}
+
+.preview-table tr.row-selected td.preview-rownum {
+  background: #1a2a4a;
+}
+
+/* ── Column resize handle ── */
+.preview-col-resize-handle {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 10;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.preview-th-content:hover .preview-col-resize-handle {
+  opacity: 0.6;
+}
+
+.preview-col-resize-handle:hover,
+.preview-col-resize-handle:active {
+  opacity: 1;
+  background: rgba(59, 130, 246, 0.3);
+}
+
+/* ── Footer hint ── */
+.preview-footer span {
+  user-select: none;
+}
+
 /* Row wrapper */
 .preview-row {
   border-bottom: 1px solid rgba(255,255,255,0.02);

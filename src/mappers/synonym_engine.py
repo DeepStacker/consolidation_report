@@ -22,7 +22,9 @@ class ResolutionMatch(BaseModel):
 def normalize_string(s: str) -> str:
     """
     Strips punctuation, dashes, underscores, slashes, dots, and spaces, converting to lowercase.
+    Also collapses embedded newlines/tabs to spaces first.
     """
+    s = ' '.join(s.replace('\n', ' ').replace('\r', ' ').split())
     return re.sub(r"[^a-zA-Z0-9]", "", s).lower().strip()
 
 class SynonymResolutionEngine:
@@ -56,7 +58,7 @@ class SynonymResolutionEngine:
         """
         Resolves a single raw header column into a canonical candidate using tiered rules.
         """
-        clean_header = raw_header.strip()
+        clean_header = ' '.join(raw_header.replace('\n', ' ').replace('\r', ' ').split())
         header_lower = clean_header.lower()
         
         # Tier 1: Exact Case-Insensitive Canonical Match

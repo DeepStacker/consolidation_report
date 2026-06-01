@@ -187,6 +187,7 @@ export default function SchemaManager() {
   const [createMappings, setCreateMappings] = useState({}); // destSheet -> canonCol -> { mapping_type, source_sheet_idx, source_column, static_value, copy_from_column, datatype, mandatory, default_value }
   const [createPreviews, setCreatePreviews] = useState({}); // sheetIdx -> col -> [samples]
   const [createSumColumns, setCreateSumColumns] = useState({}); // destSheet -> [canonical]
+  const [createSheetMeta, setCreateSheetMeta] = useState({}); // destSheet -> { client_column, s_no_column, header_row, data_start_row, column_order, hidden_columns }
   const [createStep, setCreateStep] = useState("upload"); // upload | map | done
   const [saving, setSaving] = useState(false);
   
@@ -392,6 +393,7 @@ export default function SchemaManager() {
     setCreateActive(true);
     setCreateMappings({});
     setCreateSumColumns({});
+    setCreateSheetMeta({});
     setCreatePreviews({});
     setCreateStep("upload");
     setActiveSheetTab(0);
@@ -428,10 +430,23 @@ export default function SchemaManager() {
       // Build destination-keyed mappings
       const maps = {};
       const sums = {};
+      const meta = {};
       sheetNames.forEach((name, si) => {
         maps[name] = maps[name] || {};
         sums[name] = schema.sheets[name]?.sum_columns || [];
+        // Preserve sheet-level metadata
+        const sh = schema.sheets[name] || {};
+        meta[name] = {
+          client_column: sh.client_column || '',
+          s_no_column: sh.s_no_column || '',
+          header_row: sh.header_row || 1,
+          data_start_row: sh.data_start_row || 2,
+          column_order: sh.column_order || [],
+          hidden_columns: sh.hidden_columns || [],
+        };
         (schema.sheets[name]?.columns || []).forEach(c => {
+          // Sanitize default_value — "null" string (from previous buggy round-trip) treated as null
+          if (c.default_value === 'null' || c.default_value === 'None') c.default_value = null;
           const isVirtual = !c.synonyms || c.synonyms.length === 0;
           const srcCol = isVirtual ? "" : c.synonyms[0];
           
@@ -452,7 +467,7 @@ export default function SchemaManager() {
             static_value: mapping_type === "static" ? String(c.default_value || '') : '',
             datatype: c.datatype || 'string',
             mandatory: c.mandatory || false,
-            default_value: c.default_value !== undefined && mapping_type !== "static" && mapping_type !== "filename" ? String(c.default_value) : '',
+            default_value: c.default_value != null && c.default_value !== '' && mapping_type !== "static" && mapping_type !== "filename" ? String(c.default_value) : '',
             copy_from_column: c.copy_from_column || '',
             validation_regex: c.validation_regex || '',
             validation_exceptions: c.validation_exceptions || [],
@@ -463,6 +478,7 @@ export default function SchemaManager() {
       setCreateSheets(sheets);
       setCreateMappings(maps);
       setCreateSumColumns(sums);
+      setCreateSheetMeta(meta);
       setCreateStep("map");
       setActiveSheetTab(0);
       if (sheetNames.length > 0) setActiveDestination(sheetNames[0]);
@@ -495,10 +511,21 @@ export default function SchemaManager() {
       
       const maps = {};
       const sums = {};
+      const meta = {};
       sheetNames.forEach((name, si) => {
         maps[name] = maps[name] || {};
         sums[name] = schema.sheets[name]?.sum_columns || [];
+        const sh = schema.sheets[name] || {};
+        meta[name] = {
+          client_column: sh.client_column || '',
+          s_no_column: sh.s_no_column || '',
+          header_row: sh.header_row || 1,
+          data_start_row: sh.data_start_row || 2,
+          column_order: sh.column_order || [],
+          hidden_columns: sh.hidden_columns || [],
+        };
         (schema.sheets[name]?.columns || []).forEach(c => {
+          if (c.default_value === 'null' || c.default_value === 'None') c.default_value = null;
           const isVirtual = !c.synonyms || c.synonyms.length === 0;
           const srcCol = isVirtual ? "" : c.synonyms[0];
           
@@ -514,7 +541,7 @@ export default function SchemaManager() {
             static_value: mapping_type === "static" ? String(c.default_value || '') : '',
             datatype: c.datatype || 'string',
             mandatory: c.mandatory || false,
-            default_value: c.default_value !== undefined && mapping_type !== "static" && mapping_type !== "filename" ? String(c.default_value) : '',
+            default_value: c.default_value != null && c.default_value !== '' && mapping_type !== "static" && mapping_type !== "filename" ? String(c.default_value) : '',
             copy_from_column: c.copy_from_column || '',
             validation_regex: c.validation_regex || '',
             validation_exceptions: c.validation_exceptions || [],
@@ -525,12 +552,13 @@ export default function SchemaManager() {
       setCreateSheets(sheets);
       setCreateMappings(maps);
       setCreateSumColumns(sums);
+      setCreateSheetMeta(meta);
       setCreateStep("map");
       setActiveSheetTab(0);
       if (sheetNames.length > 0) setActiveDestination(sheetNames[0]);
       setShowCreate(true);
     } catch (e) { 
-      alert(`Duplicate failed: ${e.message}`); 
+      alert(`Copy failed: ${e.message}`); 
     }
   };
 
@@ -746,9 +774,10 @@ export default function SchemaManager() {
                 source_column: sourceCol,
                 static_value: mappingType === 'static' ? rule.default_value : (existing.static_value || ''),
                 datatype: rule.datatype || existing.datatype || guessType(targetCol),
-                mandatory: rule.mandatory !== undefined ? rule.mandatory : (existing.mandatory || false),
-                default_value: rule.default_value || existing.default_value || '',
-                copy_from_column: rule.copy_from_column || existing.copy_from_column || '',
+                mandatory: sourceCol && rule.mandatory !== undefined ? rule.mandatory : (existing.mandatory || false),
+                // Only apply AI default_value/copy_from_column when there's an actual source match
+                default_value: sourceCol && rule.default_value ? rule.default_value : (existing.default_value || ''),
+                copy_from_column: sourceCol && rule.copy_from_column ? rule.copy_from_column : (existing.copy_from_column || ''),
                 is_ai_matched: true
               };
             });
@@ -943,6 +972,8 @@ export default function SchemaManager() {
   const openMappingDialog = (cname) => {
     const m = createMappings[activeDestination]?.[cname] || {};
     setDialogColumn(cname);
+    let defVal = m.default_value;
+    if (defVal === 'null' || defVal === null || defVal === undefined) defVal = '';
     setDialogTemp({
       mapping_type: m.mapping_type || 'direct',
       source_sheet_idx: m.source_sheet_idx || 0,
@@ -950,7 +981,7 @@ export default function SchemaManager() {
       static_value: m.static_value || '',
       datatype: m.datatype || guessType(cname),
       mandatory: m.mandatory || false,
-      default_value: m.default_value || '',
+      default_value: defVal,
       copy_from_column: m.copy_from_column || '',
     });
   };
@@ -961,7 +992,16 @@ export default function SchemaManager() {
     setCreateMappings(prev => {
       const m = { ...prev };
       if (!m[activeDestination]) m[activeDestination] = {};
-      m[activeDestination] = { ...m[activeDestination], [dialogColumn]: { ...dialogTemp } };
+      const orig = m[activeDestination][dialogColumn] || {};
+      m[activeDestination] = {
+        ...m[activeDestination],
+        [dialogColumn]: {
+          ...dialogTemp,
+          validation_regex: dialogTemp.validation_regex ?? orig.validation_regex ?? '',
+          validation_exceptions: dialogTemp.validation_exceptions ?? orig.validation_exceptions ?? [],
+          header_name: dialogTemp.header_name ?? orig.header_name ?? '',
+        }
+      };
       return m;
     });
     setDialogColumn(null);
@@ -1007,11 +1047,13 @@ export default function SchemaManager() {
               entry.synonyms.push(cname);
             }
           }
-          if (m.default_value !== undefined && String(m.default_value).trim() !== '') {
-            entry.default_value = m.default_value;
-          }
-          if (m.copy_from_column && m.copy_from_column !== '') {
-            entry.copy_from_column = m.copy_from_column;
+          if (srcCol) {
+            if (m.default_value != null && String(m.default_value).trim() !== '') {
+              entry.default_value = m.default_value;
+            }
+            if (m.copy_from_column && m.copy_from_column !== '') {
+              entry.copy_from_column = m.copy_from_column;
+            }
           }
         }
         
@@ -1024,12 +1066,17 @@ export default function SchemaManager() {
       });
       
       const sumCols = createSumColumns[destName] || [];
+      const sheetMeta = createSheetMeta[destName] || {};
       return { 
         name: destName, 
-        header_row: 1, 
-        data_start_row: 2, 
+        header_row: sheetMeta.header_row || 1,
+        data_start_row: sheetMeta.data_start_row || 2,
         columns: cols,
-        sum_columns: sumCols 
+        sum_columns: sumCols,
+        ...(sheetMeta.client_column ? { client_column: sheetMeta.client_column } : {}),
+        ...(sheetMeta.s_no_column ? { s_no_column: sheetMeta.s_no_column } : {}),
+        ...(sheetMeta.column_order?.length ? { column_order: sheetMeta.column_order } : {}),
+        ...(sheetMeta.hidden_columns?.length ? { hidden_columns: sheetMeta.hidden_columns } : {}),
       };
     });
 

@@ -12,11 +12,10 @@ const SourceSheetView = memo(function SourceSheetView({ headers, rows, issues })
     if (!issues || !issues[ri]) return null;
     const info = issues[ri][col];
     if (!info) return null;
-    if (Array.isArray(info)) return info[0]; // take first issue
+    if (Array.isArray(info)) return info[0];
     return typeof info === 'string' ? { type: 'warning', message: info } : info;
   }, [issues]);
 
-  // Compute flattened issue list + counts (mirrors consolidated view)
   const allSrcIssues = useMemo(() => {
     const list = [];
     const counts = { missing: 0, outlier: 0, pattern: 0, inconsistency: 0, warning: 0 };
@@ -149,16 +148,21 @@ const SourceSheetView = memo(function SourceSheetView({ headers, rows, issues })
   );
 });
 
-const PreviewRow = memo(function PreviewRow({ row, ri, headers, zoom, issues, cellChanges, focusedCell, hasIssue, isCellEdited, rowIssueCount, rowEditCount, updateCell, resetCell, handleCellClick, handleKeyNav, setFocusedCell }) {
+const PreviewRow = memo(function PreviewRow({ row, ri, headers, zoom, issues, cellChanges, focusedCell, hasIssue, isCellEdited, rowIssueCount, rowEditCount, updateCell, resetCell, handleCellClick, handleKeyNav, setFocusedCell, selectedColumnIdx, isRowSelected }) {
   const issuesCnt = rowIssueCount(ri);
   const editsCnt = rowEditCount(ri);
   let rowClass = "preview-row";
   if (issuesCnt > 0) rowClass += " has-issue-row";
   if (editsCnt > 0) rowClass += " has-edit-row";
+  if (isRowSelected) rowClass += " row-selected";
+
+  const handleTdClick = useCallback((ci, h, issueInfo) => {
+    handleCellClick(ri, h, ci, issueInfo);
+  }, [ri, handleCellClick]);
 
   return (
     <tr className={rowClass}>
-      <td className="preview-rownum">
+      <td className="preview-rownum" onClick={() => setFocusedCell({ row: ri, col: -1 })}>
         <div className="preview-rownum-inner">
           <span>{ri + 1}</span>
           {issuesCnt > 0 && <span className="preview-issue-dot"></span>}
@@ -172,9 +176,9 @@ const PreviewRow = memo(function PreviewRow({ row, ri, headers, zoom, issues, ce
         const issueMsg = issueInfo ? issueInfo.message : null;
         const edited = isCellEdited(ri, h);
         const isFocused = focusedCell && focusedCell.row === ri && focusedCell.col === ci;
+        const isColSelected = selectedColumnIdx === ci;
         const showInput = isFocused || edited;
 
-        // Issue resolution: if the cell has been edited, check if the issue is resolved
         const resolvedIssue = edited && issueType && (() => {
           const newVal = val;
           if (issueType === 'missing' && newVal !== null && newVal !== undefined && String(newVal).trim() !== '' && String(newVal).trim() !== '-' && String(newVal).trim() !== 'N/A') return true;
@@ -185,15 +189,17 @@ const PreviewRow = memo(function PreviewRow({ row, ri, headers, zoom, issues, ce
         if (issueType && !resolvedIssue) tdClass += ` has-issue issue-${issueType}`;
         if (resolvedIssue) tdClass += " is-resolved";
         if (edited) tdClass += " is-edited";
+        if (isColSelected) tdClass += " col-selected";
+        if (isFocused) tdClass += " cell-focused";
 
         return (
           <td key={h} className={tdClass}
             title={issueType && !resolvedIssue ? `⚠ ${issueType}: ${issueMsg}` : resolvedIssue ? '✓ Issue resolved by your edit' : undefined}
             {...(issueType && !resolvedIssue ? { 'data-issue-row': ri, 'data-issue-col': h } : {})}
-            onClick={() => handleCellClick(ri, h, issueInfo)}>
+            onClick={() => handleTdClick(ci, h, issueInfo)}>
             {showInput ? (
               <>
-                <input className="preview-input"
+                <input autoFocus className="preview-input"
                   defaultValue={val !== null && val !== undefined ? String(val) : ''}
                   onChange={e => updateCell(ri, h, e.target.value)}
                   onKeyDown={e => handleKeyNav(e, ri, ci)}
@@ -208,7 +214,6 @@ const PreviewRow = memo(function PreviewRow({ row, ri, headers, zoom, issues, ce
               </>
             ) : (
               <span className="preview-cell-value"
-                onMouseDown={e => { e.stopPropagation(); setFocusedCell({ row: ri, col: ci }); }}
                 style={{ fontSize: `${0.78 * zoom}rem` }}>
                 {val !== null && val !== undefined ? String(val) : ''}
               </span>
@@ -240,15 +245,18 @@ export default function PreviewEditor({ fileId, onClose }) {
   const [selectedWarning, setSelectedWarning] = useState(null);
   const [showIssuesOnly, setShowIssuesOnly] = useState(false);
   const [currentIssueIdx, setCurrentIssueIdx] = useState(0);
+  const [selectedColumnIdx, setSelectedColumnIdx] = useState(null);
+  const [selectedRowIdx, setSelectedRowIdx] = useState(null);
+  const [columnWidths, setColumnWidths] = useState({});
+  const [cutData, setCutData] = useState(null);
 
-  // Per-sheet edit tracking via ref — survives sheet switches
-  const editsRef = useRef({}); // {sheetName: {rows: [...], changes: {"ri:col": original}}}
+  const tableRef = useRef(null);
+  const resizeColRef = useRef(null);
 
-  // Force re-render when edits change (for counters etc.)
+  const editsRef = useRef({});
   const [editVersion, setEditVersion] = useState(0);
   const bump = useCallback(() => setEditVersion(v => v + 1), []);
 
-  // Current sheet's edits
   const currentEdits = editsRef.current[activeSheet] || { rows: null, changes: {} };
 
   const current = sheets[activeSheet] || {};
@@ -256,7 +264,6 @@ export default function PreviewEditor({ fileId, onClose }) {
   const rows = current.rows || [];
   const issues = current.issues || {};
 
-  // Normalise consolidated issues keys to integers for robust lookup (identical to source issues)
   const consolidatedIssues = useMemo(() => {
     const normalised = {};
     for (const [k, v] of Object.entries(issues)) {
@@ -265,7 +272,6 @@ export default function PreviewEditor({ fileId, onClose }) {
     return normalised;
   }, [issues]);
 
-  // The actual rows to display (edited or original)
   const displayRows = useMemo(() => {
     const base = currentEdits.rows || rows;
     const searchActive = searchQuery.trim().length > 0;
@@ -285,7 +291,6 @@ export default function PreviewEditor({ fileId, onClose }) {
       }
       return true;
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows, currentEdits.rows, searchQuery, headers, editVersion, showIssuesOnly, consolidatedIssues]);
 
   const cellChanges = currentEdits.changes;
@@ -317,34 +322,26 @@ export default function PreviewEditor({ fileId, onClose }) {
 
   const issueTypeCounts = allIssues.counts;
 
-  // Source view data
   const currentSrcFile = sources[activeSourceFile] || {};
   const currentSrcSheet = currentSrcFile[activeSourceSheet] || {};
   const srcHeaders = currentSrcSheet.headers || [];
   const srcRows = currentSrcSheet.rows || [];
   const srcError = sources[activeSourceFile]?.error;
 
-  // Use backend-provided issues when available (more accurate), fallback to client-side
   const sourceIssues = useMemo(() => {
-    // Check if backend already provided issues for this source sheet
     const backendIssues = currentSrcSheet.issues;
     if (backendIssues && Object.keys(backendIssues).length > 0) {
-      // Backend keys may be string or int — normalise to int keys
       const normalised = {};
       for (const [k, v] of Object.entries(backendIssues)) {
         normalised[parseInt(k)] = v;
       }
       return normalised;
     }
-
-    // Fallback: lightweight client-side detection
     const result = {};
     if (!srcRows.length || !srcHeaders.length) return result;
-
     const dateRe = /^\d{2,4}[-\/]\d{1,2}[-\/]\d{2,4}$/;
     const numRe = /^-?\d+(\.\d+)?$/;
     const codeRe = /^[A-Z0-9\-_]+$/i;
-
     const colMeta = {};
     for (const h of srcHeaders) {
       const vals = srcRows.map(r => r[h]);
@@ -353,7 +350,6 @@ export default function PreviewEditor({ fileId, onClose }) {
       const numCount = filled.filter(v => numRe.test(String(v))).length;
       const dateCount = filled.filter(v => dateRe.test(String(v))).length;
       const codeCount = filled.filter(v => codeRe.test(String(v))).length;
-
       colMeta[h] = { fillRate, numCount, dateCount, codeCount };
       if (filled.length > 0) {
         if (numCount > filled.length * 0.7) colMeta[h].type = 'numeric';
@@ -362,18 +358,15 @@ export default function PreviewEditor({ fileId, onClose }) {
         else colMeta[h].type = 'text';
       } else colMeta[h].type = 'text';
     }
-
     for (let ri = 0; ri < srcRows.length; ri++) {
       for (const h of srcHeaders) {
         const val = srcRows[ri][h];
         const meta = colMeta[h];
-        // Missing
         if ((val == null || val === '') && meta.fillRate > 0.5) {
           result[ri] = result[ri] || {};
           result[ri][h] = { type: 'missing', message: 'Missing value' };
           continue;
         }
-        // Pattern mismatch
         if (val != null && val !== '' && meta.type !== 'text') {
           const s = String(val);
           if (meta.type === 'numeric' && !numRe.test(s)) {
@@ -427,24 +420,24 @@ export default function PreviewEditor({ fileId, onClose }) {
     return `${rowIdx}:${col}` in (currentEdits.changes || {});
   }, [currentEdits.changes]);
 
-  const updateCell = useCallback((rowIdx, colName, val) => {
+  const ensureSheetEdits = useCallback(() => {
     editsRef.current[activeSheet] = editsRef.current[activeSheet] || { rows: null, changes: {} };
     const sheet = editsRef.current[activeSheet];
-
-    // Initialize edited rows from original if first edit
     if (!sheet.rows) {
       sheet.rows = rows.map(r => ({ ...r }));
     }
-    sheet.rows[rowIdx] = { ...sheet.rows[rowIdx], [colName]: val };
+    return sheet;
+  }, [activeSheet, rows]);
 
-    // Track original value
+  const updateCell = useCallback((rowIdx, colName, val) => {
+    const sheet = ensureSheetEdits();
+    sheet.rows[rowIdx] = { ...sheet.rows[rowIdx], [colName]: val };
     const key = `${rowIdx}:${colName}`;
     if (!(key in sheet.changes)) {
       sheet.changes[key] = getOriginalValue(rowIdx, colName);
     }
-
     bump();
-  }, [rows, activeSheet, getOriginalValue, bump]);
+  }, [ensureSheetEdits, getOriginalValue, bump]);
 
   const resetCell = useCallback((rowIdx, colName) => {
     const sheet = editsRef.current[activeSheet];
@@ -462,6 +455,8 @@ export default function PreviewEditor({ fileId, onClose }) {
   const resetSheetEdits = useCallback(() => {
     delete editsRef.current[activeSheet];
     setFocusedCell(null);
+    setSelectedColumnIdx(null);
+    setSelectedRowIdx(null);
     bump();
   }, [activeSheet, bump]);
 
@@ -492,16 +487,150 @@ export default function PreviewEditor({ fileId, onClose }) {
     return count;
   }, [activeSheet, editVersion]);
 
+  /* ── Clipboard Paste (Excel-style) ── */
+  const handlePaste = useCallback(async (e) => {
+    if (focusedCell === null && selectedColumnIdx === null && selectedRowIdx === null) return;
+    e.preventDefault();
+
+    let text;
+    try {
+      text = await navigator.clipboard.readText();
+    } catch {
+      text = e.clipboardData?.getData('text/plain') || '';
+    }
+    if (!text.trim()) return;
+
+    const rows = text.split('\n').filter(r => r.length > 0 || rows === text.split('\n'));
+    const data = rows.map(r => r.split('\t'));
+
+    if (!data.length || !data[0].length) return;
+
+    const sheet = ensureSheetEdits();
+
+    let startRow = focusedCell !== null ? focusedCell.row : (selectedRowIdx !== null ? selectedRowIdx : 0);
+    let startCol = focusedCell !== null ? focusedCell.col : (selectedColumnIdx !== null ? selectedColumnIdx : 0);
+
+    // Paste column-wise if a single column is selected and data is tall
+    const isColPaste = selectedColumnIdx !== null && selectedRowIdx === null && data[0].length === 1;
+    // Paste row-wise if a single row is selected and data is wide
+    const isRowPaste = selectedRowIdx !== null && selectedColumnIdx === null && data.length === 1;
+
+    // Apply the pasted data
+    for (let di = 0; di < data.length; di++) {
+      for (let dj = 0; dj < data[di].length; dj++) {
+        let targetRow, targetCol;
+        if (isColPaste) {
+          targetRow = startRow + di;
+          targetCol = startCol;
+        } else if (isRowPaste) {
+          targetRow = startRow;
+          targetCol = startCol + dj;
+        } else {
+          targetRow = startRow + di;
+          targetCol = startCol + dj;
+        }
+
+        if (targetRow >= sheet.rows.length || targetCol >= headers.length) continue;
+        const colName = headers[targetCol];
+        if (!colName) continue;
+
+        const val = data[di][dj];
+        sheet.rows[targetRow] = { ...sheet.rows[targetRow], [colName]: val };
+
+        const key = `${targetRow}:${colName}`;
+        if (!(key in sheet.changes)) {
+          sheet.changes[key] = getOriginalValue(targetRow, colName);
+        }
+      }
+    }
+
+    setCutData(null);
+    bump();
+  }, [focusedCell, selectedColumnIdx, selectedRowIdx, ensureSheetEdits, headers, getOriginalValue, bump]);
+
+  /* ── Clipboard Copy (Excel-style) ── */
+  const handleCopy = useCallback(async (e) => {
+    if (focusedCell === null && selectedColumnIdx === null && selectedRowIdx === null) return;
+    e.preventDefault();
+
+    const base = editsRef.current[activeSheet]?.rows || rows;
+    let copyRows, copyCols;
+
+    if (selectedColumnIdx !== null) {
+      copyCols = [selectedColumnIdx];
+      copyRows = selectedRowIdx !== null ? [selectedRowIdx] : base.map((_, i) => i);
+    } else if (selectedRowIdx !== null) {
+      copyRows = [selectedRowIdx];
+      copyCols = headers.map((_, i) => i);
+    } else if (focusedCell !== null) {
+      copyRows = [focusedCell.row];
+      copyCols = [focusedCell.col];
+    } else {
+      return;
+    }
+
+    const lines = [];
+    const usedCols = [...new Set(copyCols)];
+    for (const ri of copyRows) {
+      const line = usedCols.map(ci => {
+        const val = base[ri]?.[headers[ci]];
+        return val !== null && val !== undefined ? String(val) : '';
+      }).join('\t');
+      lines.push(line);
+    }
+
+    try {
+      await navigator.clipboard.writeText(lines.join('\n'));
+    } catch {
+      const ta = document.createElement('textarea');
+      ta.value = lines.join('\n');
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    }
+  }, [focusedCell, selectedColumnIdx, selectedRowIdx, activeSheet, rows, headers]);
+
+  /* ── Cut handler ── */
+  const handleCut = useCallback((e) => {
+    if (focusedCell === null) return;
+    e.preventDefault();
+
+    const base = editsRef.current[activeSheet]?.rows || rows;
+    const val = base[focusedCell.row]?.[headers[focusedCell.col]];
+    const text = val !== null && val !== undefined ? String(val) : '';
+
+    navigator.clipboard.writeText(text).catch(() => {});
+    setCutData({ row: focusedCell.row, col: focusedCell.col });
+  }, [focusedCell, activeSheet, rows, headers]);
+
+  /* ── Global keydown handler for clipboard ops ── */
+  useEffect(() => {
+    const handler = (e) => {
+      const mod = e.metaKey || e.ctrlKey;
+      if (mod && e.key === 'v') {
+        handlePaste(e);
+      } else if (mod && e.key === 'c') {
+        handleCopy(e);
+      } else if (mod && e.key === 'x') {
+        handleCut(e);
+      } else if (e.key === 'Escape') {
+        handleClose();
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [handlePaste, handleCopy, handleCut]);
+
   /* DOM-based keyboard navigation (Excel-like navigation engine) */
   const handleKeyNav = useCallback((e, ri, ci) => {
     const { key, shiftKey } = e;
-    
-    // Support Tab, Enter, Escape, and Arrow Up/Down/Left/Right keys
+
     const isArrow = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(key);
     if (key !== "Tab" && key !== "Enter" && key !== "Escape" && !isArrow) return;
 
     const input = e.currentTarget;
-    
+
     if (key === "Escape") {
       e.preventDefault();
       input.blur();
@@ -568,25 +697,60 @@ export default function PreviewEditor({ fileId, onClose }) {
     }
 
     if (nextTd) {
-      const nextInput = nextTd.querySelector('input.preview-input');
-      const nextSpan = nextTd.querySelector('.preview-cell-value');
-      if (nextInput) {
-        nextInput.focus();
-        nextInput.select();
-      } else if (nextSpan) {
-        nextSpan.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+      // Determine the row and column indices from the DOM
+      const nextTr = nextTd.closest('tr');
+      const allTds = nextTr ? Array.from(nextTr.querySelectorAll('td:not(.preview-rownum)')) : [];
+      const nextCi = allTds.indexOf(nextTd);
+      const nextRi = nextTd.closest('tbody') ? Array.from(nextTd.closest('tbody').children).indexOf(nextTr) : 0;
+      if (nextCi >= 0) {
+        setFocusedCell({ row: nextRi, col: nextCi });
+        const nextInput = nextTd.querySelector('input.preview-input');
+        if (nextInput) {
+          nextInput.focus();
+          nextInput.select();
+        }
       }
     }
   }, [setFocusedCell]);
 
-  const handleCellClick = useCallback((ri, col, issueInfo) => {
+  const handleCellClick = useCallback((ri, col, ci, issueInfo) => {
+    setFocusedCell({ row: ri, col: ci >= 0 ? ci : 0 });
     if (issueInfo) {
       setSelectedWarning({ row: ri, col, message: issueInfo.message || issueInfo, type: issueInfo.type || 'warning' });
       setShowWarningSidebar(true);
     }
   }, []);
 
-  /* ── Save: iterate ALL sheets ── */
+  /* ── Column header click for selection ── */
+  const handleHeaderClick = useCallback((ci) => {
+    setSelectedColumnIdx(selectedColumnIdx === ci ? null : ci);
+    setSelectedRowIdx(null);
+    setBulkCol(null);
+  }, [selectedColumnIdx]);
+
+  /* ── Column resize ── */
+  const handleResizeStart = useCallback((e, ci) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const startX = e.clientX;
+    const startWidth = columnWidths[ci] || 120;
+    resizeColRef.current = ci;
+
+    const onMove = (ev) => {
+      const diff = ev.clientX - startX;
+      const newWidth = Math.max(40, startWidth + diff);
+      setColumnWidths(prev => ({ ...prev, [ci]: newWidth }));
+    };
+    const onUp = () => {
+      resizeColRef.current = null;
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }, [columnWidths]);
+
+  /* ── Save ── */
   const handleSave = async () => {
     setSaving(true);
     try {
@@ -666,19 +830,38 @@ export default function PreviewEditor({ fileId, onClose }) {
     applyBulkEdits(colName, () => "");
   }, [applyBulkEdits]);
 
-  /* ── Switch sheets: save edits to ref, load next ── */
+  /* ── Fill Down (Ctrl+D) ── */
+  const handleFillDown = useCallback(() => {
+    if (focusedCell === null) return;
+    const { row, col } = focusedCell;
+    if (row <= 0 || col < 0) return;
+    const sheet = ensureSheetEdits();
+    const colName = headers[col];
+    if (!colName) return;
+    const sourceVal = sheet.rows[row - 1]?.[colName];
+    const val = sourceVal !== null && sourceVal !== undefined ? String(sourceVal) : '';
+    sheet.rows[row] = { ...sheet.rows[row], [colName]: val };
+    const key = `${row}:${colName}`;
+    if (!(key in sheet.changes)) {
+      sheet.changes[key] = getOriginalValue(row, colName);
+    }
+    bump();
+  }, [focusedCell, headers, ensureSheetEdits, getOriginalValue, bump]);
+
+  /* ── Switch sheets ── */
   const switchSheet = useCallback((name) => {
     setActiveSheet(name);
     setSearchQuery("");
     setBulkCol(null);
     setShowWarningSidebar(false);
     setFocusedCell(null);
+    setSelectedColumnIdx(null);
+    setSelectedRowIdx(null);
     setSaveDone(false);
   }, []);
 
   const totalEditCount = useMemo(() => {
     return Object.values(editsRef.current).reduce((sum, s) => sum + Object.keys(s.changes || {}).length, 0);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editVersion]);
 
   const navigateToIssue = useCallback((dir) => {
@@ -697,7 +880,7 @@ export default function PreviewEditor({ fileId, onClose }) {
 
   return (
     <div className="overlay">
-      <div className="overlay-content wide preview-overlay" onClick={e => e.stopPropagation()}>
+      <div className="overlay-content wide preview-overlay" onClick={e => e.stopPropagation()} ref={tableRef}>
         <div className="overlay-header">
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <h2>Preview & Edit — Consolidated Report</h2>
@@ -724,7 +907,6 @@ export default function PreviewEditor({ fileId, onClose }) {
         {loading ? (
           <div className="preview-empty-state">Loading preview...</div>
         ) : mode === 'consolidated' ? (
-          /* ── CONSOLIDATED VIEW ── */
           <>
             <div className="preview-toolbar">
               <div className="map-sheet-tabs" style={{ marginBottom: 0 }}>
@@ -750,6 +932,9 @@ export default function PreviewEditor({ fileId, onClose }) {
                     onChange={e => setSearchQuery(e.target.value)} />
                   {searchQuery && <button className="preview-search-clear" onClick={() => setSearchQuery("")}>✕</button>}
                 </div>
+                {focusedCell !== null && focusedCell.row > 0 && (
+                  <button className="btn-sm" onClick={handleFillDown} title="Fill down (Ctrl+D)">↓ Fill</button>
+                )}
                 {Object.keys(currentEdits.changes || {}).length > 0 && (
                   <button className="btn-sm" onClick={resetSheetEdits}>↺ Reset sheet</button>
                 )}
@@ -798,9 +983,11 @@ export default function PreviewEditor({ fileId, onClose }) {
                   <thead>
                     <tr>
                       <th className="preview-rownum" style={{ minWidth: '36px', width: '36px' }}>#</th>
-                      {headers.map(h => (
-                        <th key={h}>
-                          <div className="preview-th-content">
+                      {headers.map((h, ci) => (
+                        <th key={h}
+                          onClick={() => handleHeaderClick(ci)}
+                          className={selectedColumnIdx === ci ? 'col-selected' : ''}>
+                          <div className="preview-th-content" style={{ width: columnWidths[ci] || 120, minWidth: 40, position: 'relative' }}>
                             <span className="preview-th-label" title={h}>{h}</span>
                             {issueCountByCol[h] > 0 && (
                               <span className="preview-col-issue-badge" title={`${issueCountByCol[h]} issue(s) in this column`}>
@@ -818,6 +1005,9 @@ export default function PreviewEditor({ fileId, onClose }) {
                                 </div>
                               )}
                             </div>
+                            {/* Column resize handle */}
+                            <div className="preview-col-resize-handle"
+                              onMouseDown={e => handleResizeStart(e, ci)} />
                           </div>
                         </th>
                       ))}
@@ -837,7 +1027,9 @@ export default function PreviewEditor({ fileId, onClose }) {
                           rowIssueCount={rowIssueCount} rowEditCount={rowEditCount}
                           updateCell={updateCell} resetCell={resetCell}
                           handleCellClick={handleCellClick} handleKeyNav={handleKeyNav}
-                          setFocusedCell={setFocusedCell} />
+                          setFocusedCell={setFocusedCell}
+                          selectedColumnIdx={selectedColumnIdx}
+                          isRowSelected={selectedRowIdx === actualRi} />
                       );
                     })}
                   </tbody>
@@ -877,7 +1069,6 @@ export default function PreviewEditor({ fileId, onClose }) {
             </div>
           </>
         ) : (
-          /* ── SOURCE FILES VIEW ── */
           sourceFileNames.length === 0 ? (
             <div className="preview-empty-state">No source file data available</div>
           ) : (
@@ -906,7 +1097,7 @@ export default function PreviewEditor({ fileId, onClose }) {
                       <div key={sname} className={`sheet-tab ${sname === activeSourceSheet ? 'active' : ''}`}
                         onClick={() => setActiveSourceSheet(sname)}>
                         {sname}
-                        <span className="preview-row-count">({(currentSrcFile[sname]?.rows || []).length})</span>
+                        <span className="preview-row-count">{(currentSrcFile[sname]?.rows || []).length}</span>
                       </div>
                     ))}
                   </div>
@@ -922,6 +1113,11 @@ export default function PreviewEditor({ fileId, onClose }) {
           <div className="preview-footer-left">
             {mode === 'consolidated' && totalEditCount > 0 && (
               <span className="preview-footer-edits">{totalEditCount} cell{totalEditCount !== 1 ? 's' : ''} edited across {Object.keys(editsRef.current).filter(k => Object.keys(editsRef.current[k]?.changes || {}).length > 0).length} sheet(s)</span>
+            )}
+            {mode === 'consolidated' && (
+              <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginLeft: '8px' }}>
+                Ctrl+V to paste · Ctrl+C to copy · Ctrl+X to cut · Ctrl+D fill down
+              </span>
             )}
           </div>
           <div className="preview-footer-right">

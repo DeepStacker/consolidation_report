@@ -1,6 +1,6 @@
 client_id: vistaar_financial_services_private_limited_muthoot_mercantile_payment_tracker_feb'26
-client_display_name: VISTAAR FINANCIAL SERVICES PRIVATE LIMITED  Muthoot Mercantile  Payment
-  Tracker   Feb'26
+client_display_name: VISTAAR FINANCIAL SERVICES PRIVATE LIMITED Muthoot Mercantile
+  Payment Tracker Feb'26
 filename_pattern: '*vistaar_financial_services_private_limited_muthoot_mercantile_payment_tracker_feb''26*'
 active: true
 sheets:
@@ -74,19 +74,19 @@ sheets:
       default_value: AXIS Bank POA
       mandatory: true
     - canonical_name: Base Audit Fee
-      datatype: decimal
+      datatype: integer
       synonyms:
       - Base Audit Fee
       default_value: '0.0'
       mandatory: true
     - canonical_name: Total pay (Base)
-      datatype: decimal
+      datatype: integer
       synonyms:
       - Total pay (Base)
       default_value: '0.0'
       mandatory: true
     - canonical_name: Travel charges(If any)
-      datatype: decimal
+      datatype: integer
       synonyms:
       - Travel charges(If any)
       default_value: '0'
@@ -94,21 +94,21 @@ sheets:
     - canonical_name: Cancelled visits
       datatype: integer
       synonyms: []
-      default_value: '0'
+      default_value: ' '
     - canonical_name: Branch Cancellation Charges
-      datatype: decimal
+      datatype: integer
       synonyms: []
-      default_value: '0'
+      default_value: ' '
     - canonical_name: Andaman & Nicobar Branch Expenses
-      datatype: decimal
+      datatype: integer
       synonyms: []
-      default_value: '0'
+      default_value: ' '
     - canonical_name: Error Deduction
-      datatype: decimal
+      datatype: integer
       synonyms: []
-      default_value: '0'
+      default_value: ' '
     - canonical_name: Total pay
-      datatype: decimal
+      datatype: integer
       synonyms:
       - Total pay
       default_value: '0.0'
@@ -123,7 +123,7 @@ sheets:
       - Bank Name
       mandatory: true
     - canonical_name: A/c Number
-      datatype: string
+      datatype: integer
       synonyms:
       - A/c Number
       mandatory: true
@@ -161,6 +161,7 @@ sheets:
     - canonical_name: SOL ID
       datatype: string
       synonyms: []
+      default_value: ' '
     - canonical_name: BRANCH
       datatype: string
       synonyms:
@@ -171,7 +172,6 @@ sheets:
       datatype: string
       synonyms:
       - Location
-      mandatory: true
     - canonical_name: State
       datatype: string
       synonyms:
@@ -180,7 +180,7 @@ sheets:
     - canonical_name: Total No.of A/cs
       datatype: integer
       synonyms: []
-      default_value: '1'
+      default_value: ' '
     - canonical_name: Assayer Name
       datatype: string
       synonyms:
@@ -214,74 +214,75 @@ sheets:
       - Audit schedule date
       - Schedule date
       mandatory: true
-    - canonical_name: "Audit \nStatus"
+    - canonical_name: Audit Status
       datatype: string
       synonyms:
       - Audit Status
-      - "Audit \nStatus"
       mandatory: true
-    - canonical_name: "Audit \ncompletion date"
+    - canonical_name: Audit completion date
       datatype: date
       synonyms:
       - End Date
-      - "Audit \ncompletion date"
+      - Audit completion date
       mandatory: true
     - canonical_name: Assayer Reporting time at Branch
-      datatype: time
+      datatype: string
       synonyms: []
+      default_value: ' '
     - canonical_name: Audit start time
-      datatype: time
+      datatype: string
       synonyms: []
+      default_value: ' '
     - canonical_name: Audit End Time
-      datatype: time
+      datatype: string
       synonyms: []
-    - canonical_name: "No of days \naudited"
+      default_value: ' '
+    - canonical_name: No of days audited
       datatype: integer
       synonyms: []
-      default_value: '1'
-    - canonical_name: "No of days \naudited For client"
+      default_value: ' '
+    - canonical_name: No of days audited For client
       datatype: integer
       synonyms: []
-      default_value: '1'
-    - canonical_name: "No of Packets \naudited"
+      default_value: ' '
+    - canonical_name: No of Packets audited
       datatype: integer
       synonyms:
       - Total pouches suggested for audit
-      - "No of Packets \naudited"
-      mandatory: true
+      - No of Packets audited
     - canonical_name: Additional Packet
       datatype: integer
       synonyms: []
-      default_value: '0'
+      default_value: ' '
     - canonical_name: Client fee
-      datatype: decimal
+      datatype: integer
       synonyms:
       - Client Fees
       - Client fee
       default_value: '0'
       mandatory: true
     - canonical_name: Additional
-      datatype: decimal
+      datatype: integer
       synonyms:
       - Additonal
       - Additional
       default_value: '0'
       mandatory: true
     - canonical_name: Final Client Fees
-      datatype: decimal
+      datatype: integer
       synonyms:
       - Final Client Fees
       default_value: '0'
       mandatory: true
     - canonical_name: Assayer fee
-      datatype: decimal
+      datatype: integer
       synonyms:
       - Assayer Fees
       - Assayer fee
       default_value: '0'
       mandatory: true
     - canonical_name: Additional fee
-      datatype: decimal
+      datatype: integer
       synonyms:
       - Additional Fees
       - Additional fee
@@ -308,25 +309,30 @@ sheets:
       - Cancellation
       - Cancelled
       default_value: '0'
+      mandatory: true
     - canonical_name: Error Deduciton
       datatype: integer
       synonyms: []
+      default_value: ' '
     - canonical_name: Total
-      datatype: decimal
+      datatype: integer
       synonyms:
       - Total
       default_value: '0'
       mandatory: true
     - canonical_name: Audit Remarks
       datatype: string
-      synonyms: []
-      copy_from_column: Remarks
+      synonyms:
+      - Remarks
+      - Audit Remarks
     - canonical_name: Seeding Status
       datatype: string
       synonyms: []
+      default_value: ' '
     - canonical_name: Report
       datatype: string
       synonyms: []
+      default_value: ' '
     - canonical_name: Total pouches suggested for audit
       datatype: integer
       synonyms:
@@ -336,7 +342,7 @@ sheets:
     - canonical_name: Already Audited
       datatype: integer
       synonyms: []
-      default_value: '0'
+      default_value: ' '
     - canonical_name: A/C Closed
       datatype: integer
       synonyms:
@@ -383,48 +389,50 @@ sheets:
     - canonical_name: Aadhar No
       datatype: string
       synonyms: []
+      default_value: ' '
     - canonical_name: Urban/ Rural
       datatype: string
       synonyms: []
+      default_value: ' '
     - canonical_name: T & F Client fee
-      datatype: decimal
+      datatype: integer
       synonyms: []
-      default_value: '0'
+      default_value: ' '
     - canonical_name: POA Client Fees
-      datatype: decimal
+      datatype: integer
       synonyms: []
-      default_value: '0'
-      copy_from_column: Client fee
-    - canonical_name: 'Cancelled
-
-        Client fee'
-      datatype: decimal
-      synonyms: []
-      default_value: '0'
-    - canonical_name: billing  remarks
+      default_value: ' '
+    - canonical_name: Cancelled Client fee
+      datatype: integer
+      synonyms:
+      - Cancellation
+      - Cancelled Client fee
+    - canonical_name: billing remarks
       datatype: string
       synonyms: []
-      copy_from_column: Remarks
+      default_value: ' '
     - canonical_name: Touch and Feel Audit Packet Count
       datatype: integer
       synonyms: []
-      default_value: '0'
-    - canonical_name: "POA \nPacket count"
+      default_value: ' '
+    - canonical_name: POA Packet count
       datatype: integer
       synonyms: []
-      default_value: '0'
-    - canonical_name: Additional Packet  T& F
+      default_value: ' '
+    - canonical_name: Additional Packet T& F
       datatype: integer
       synonyms: []
-      default_value: '0'
-    - canonical_name: Additional Packet  POA
+      default_value: ' '
+    - canonical_name: Additional Packet POA
       datatype: integer
       synonyms: []
-      default_value: '0'
+      default_value: ' '
     - canonical_name: oracle_id
       datatype: string
       synonyms: []
+      default_value: ' '
     - canonical_name: Address
       datatype: string
       synonyms: []
+      default_value: ' '
     sum_columns: []

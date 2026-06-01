@@ -7,7 +7,9 @@ import io
 import json
 import urllib.request
 import asyncio
+import time
 import contextlib
+import contextvars
 from io import StringIO
 from typing import List, Dict, Any
 from datetime import datetime, date
@@ -18,6 +20,11 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from src.main import execute_e2e_consolidation
 from src.models.domain_models import SchemaDefinition
+
+def _normalize_header(h: str) -> str:
+    """Replace embedded newlines with space and collapse whitespace."""
+    return ' '.join(h.replace('\r', ' ').replace('\n', ' ').split())
+
 
 app = FastAPI(title="Consolidation Pipeline API")
 
@@ -51,24 +58,44 @@ if os.path.exists(env_path):
 FILE_STORE: Dict[str, dict] = {}  # { file_id: {"bytes": bytes, "audit": dict} }
 BATCH_STORE: List[dict] = []  # ordered list of batch records
 MAX_FILE_STORE = 50  # max files kept in memory
+file_store_lock = asyncio.Lock()
+batch_store_lock = asyncio.Lock()
 
-def _trim_file_store():
+async def _trim_file_store():
     """Remove oldest entries when FILE_STORE exceeds MAX_FILE_STORE."""
     while len(FILE_STORE) > MAX_FILE_STORE:
         oldest = next(iter(FILE_STORE))
         del FILE_STORE[oldest]
+
+# Per-request stdout capture via contextvars (safe for concurrent async requests)
+_capture_stream = contextvars.ContextVar('_capture_stream', default=None)
+
+class _ContextAwareStdout:
+    def write(self, text):
+        stream = _capture_stream.get(None)
+        if stream is not None:
+            stream.write(text)
+        else:
+            sys.__stdout__.write(text)
+    def flush(self):
+        stream = _capture_stream.get(None)
+        if stream is not None:
+            stream.flush()
+        else:
+            sys.__stdout__.flush()
+
+sys.stdout = _ContextAwareStdout()
 
 class LogCapture:
     def __init__(self):
         self.stream = StringIO()
 
     def __enter__(self):
-        self._redirect = contextlib.redirect_stdout(self.stream)
-        self._redirect.__enter__()
+        self.token = _capture_stream.set(self.stream)
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        self._redirect.__exit__(exc_type, exc_val, exc_tb)
+        _capture_stream.reset(self.token)
 
     def get_logs(self) -> str:
         return self.stream.getvalue()
@@ -119,17 +146,18 @@ async def consolidate(files: List[UploadFile] = File(...)):
         logs = capturer.get_logs()
 
         if not success:
-            BATCH_STORE.insert(0, {
-                "id": str(uuid.uuid4()),
-                "timestamp": datetime.now().isoformat(),
-                "filenames": uploaded_files_log,
-                "file_id": None,
-                "health_score": 0,
-                "status": "FAILED",
-                "error": error_msg,
-            })
-            if len(BATCH_STORE) > 50:
-                BATCH_STORE.pop()
+            async with batch_store_lock:
+                BATCH_STORE.insert(0, {
+                    "id": str(uuid.uuid4()),
+                    "timestamp": datetime.now().isoformat(),
+                    "filenames": uploaded_files_log,
+                    "file_id": None,
+                    "health_score": 0,
+                    "status": "FAILED",
+                    "error": error_msg,
+                })
+                if len(BATCH_STORE) > 50:
+                    BATCH_STORE.pop()
             return {
                 "success": False,
                 "logs": logs,
@@ -163,7 +191,9 @@ async def consolidate(files: List[UploadFile] = File(...)):
                         sws = src_wb[sname]
                         src_headers = []
                         for cell in next(sws.iter_rows(min_row=1, max_row=1, values_only=True), []):
-                            src_headers.append(str(cell).strip() if cell is not None else "")
+                            h = _normalize_header(str(cell)) if cell is not None else ""
+                            if h:
+                                src_headers.append(h)
                         src_rows = []
                         for row in sws.iter_rows(min_row=2, values_only=True):
                             row_data = {}
@@ -186,8 +216,9 @@ async def consolidate(files: List[UploadFile] = File(...)):
                     source_data[f] = {"error": str(e)}
 
         # Store file bytes + audit data together
-        FILE_STORE[file_id] = {"bytes": file_bytes, "audit": audit_data, "sources": source_data}
-        _trim_file_store()
+        async with file_store_lock:
+            FILE_STORE[file_id] = {"bytes": file_bytes, "audit": audit_data, "sources": source_data}
+            await _trim_file_store()
 
         # Create batch record for run history
         batch_record = {
@@ -198,10 +229,10 @@ async def consolidate(files: List[UploadFile] = File(...)):
             "health_score": _compute_audit_summary(audit_data).get("health_score", 100),
             "status": "SUCCESS",
         }
-        BATCH_STORE.insert(0, batch_record)  # newest first
-        # Keep max 50 batches in memory
-        if len(BATCH_STORE) > 50:
-            BATCH_STORE.pop()
+        async with batch_store_lock:
+            BATCH_STORE.insert(0, batch_record)  # newest first
+            if len(BATCH_STORE) > 50:
+                BATCH_STORE.pop()
 
         # Compute enriched audit summary
         audit_summary = _compute_audit_summary(audit_data)
@@ -303,18 +334,10 @@ def _compute_audit_summary(audit: dict) -> dict:
 # ──────────────────────────────────────────────
 
 import yaml
-from functools import lru_cache
 
 SCHEMAS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config", "schemas")
 
 
-def _clear_schema_cache():
-    """Invalidate schema file caches after write operations."""
-    _find_schema_file.cache_clear()
-    _read_schema_yaml.cache_clear()
-
-
-@lru_cache(maxsize=32)
 def _find_schema_file(client_id: str) -> str | None:
     """Find schema YAML file by client_id."""
     if not os.path.isdir(SCHEMAS_DIR):
@@ -332,14 +355,12 @@ def _find_schema_file(client_id: str) -> str | None:
     return None
 
 
-@lru_cache(maxsize=64)
 def _read_schema_yaml(filepath: str) -> dict:
     with open(filepath) as fh:
         return yaml.safe_load(fh)
 
 
 def _write_schema_yaml(filepath: str, data: dict):
-    _clear_schema_cache()
     with open(filepath, "w") as fh:
         yaml.dump(data, fh, default_flow_style=False, sort_keys=False, allow_unicode=True)
 
@@ -422,7 +443,6 @@ async def update_schema(client_id: str, data: dict):
         if _find_schema_file(new_id):
             raise HTTPException(status_code=409, detail=f"Schema '{new_id}' already exists")
         os.remove(fp)
-        _clear_schema_cache()
         fp = os.path.join(SCHEMAS_DIR, f"{new_id}.yaml")
     # Validate schema before writing
     try:
@@ -439,7 +459,6 @@ async def delete_schema(client_id: str):
     if not fp:
         raise HTTPException(status_code=404, detail=f"Schema '{client_id}' not found")
     os.remove(fp)
-    _clear_schema_cache()
     return {"success": True, "client_id": client_id}
 
 
@@ -468,7 +487,8 @@ async def list_batches():
 @app.delete("/api/batches")
 async def clear_batches():
     """Clear all batch history."""
-    BATCH_STORE.clear()
+    async with batch_store_lock:
+        BATCH_STORE.clear()
     return {"success": True}
 
 
@@ -682,7 +702,7 @@ async def preview_file(file_id: str):
             ws = wb[name]
             headers = []
             for cell in next(ws.iter_rows(min_row=1, max_row=1, values_only=True), []):
-                headers.append(str(cell).strip() if cell is not None else "")
+                headers.append(_normalize_header(str(cell)) if cell is not None else "")
             rows = []
             issue_map = {}
             for ri, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
@@ -885,7 +905,7 @@ async def save_preview(file_id: str, data: dict):
         ws = wb[name]
         headers = []
         for cell in next(ws.iter_rows(min_row=1, max_row=1, values_only=True), []):
-            headers.append(str(cell).strip() if cell is not None else "")
+            headers.append(_normalize_header(str(cell)) if cell is not None else "")
 
         edited_rows = sheet_data.get("rows", [])
         # Clear existing data rows (keep header)
@@ -903,8 +923,9 @@ async def save_preview(file_id: str, data: dict):
     wb.save(buf)
     buf.seek(0)
     new_id = str(uuid.uuid4())
-    FILE_STORE[new_id] = {"bytes": buf.getvalue(), "audit": entry.get("audit", {}) if isinstance(entry, dict) else {}, "sources": entry.get("sources", {}) if isinstance(entry, dict) else {}}
-    _trim_file_store()
+    async with file_store_lock:
+        FILE_STORE[new_id] = {"bytes": buf.getvalue(), "audit": entry.get("audit", {}) if isinstance(entry, dict) else {}, "sources": entry.get("sources", {}) if isinstance(entry, dict) else {}}
+        await _trim_file_store()
     wb.close()
     return {"success": True, "file_id": new_id}
 
@@ -926,7 +947,7 @@ async def analyze_excel(file: UploadFile = File(...)):
             headers = []
             for cell in next(ws.iter_rows(min_row=1, max_row=1, values_only=True), []):
                 if cell is not None:
-                    h = str(cell).strip()
+                    h = _normalize_header(str(cell))
                     if h:
                         headers.append(h)
             # Read up to 5 data rows for preview
@@ -1015,7 +1036,7 @@ def get_consolidated_preview(sheet_name: str, max_rows: int = 20) -> dict:
         ws = wb[matched]
         rows_iter = ws.iter_rows(values_only=True)
         header_row = next(rows_iter, [])
-        headers = [str(c).strip() if c is not None else "" for c in header_row]
+        headers = [_normalize_header(str(c)) if c is not None else "" for c in header_row]
         sample_rows = []
         for _ in range(max_rows):
             try:
@@ -1063,7 +1084,7 @@ async def consolidated_headers():
         for sname in wb.sheetnames:
             ws = wb[sname]
             row = next(ws.iter_rows(values_only=True), [])
-            headers = [str(c).strip() for c in row if c is not None and str(c).strip()]
+            headers = [_normalize_header(str(c)) for c in row if c is not None and str(c).strip()]
             result[sname] = headers
         wb.close()
     except Exception:
@@ -1299,8 +1320,16 @@ Return ONLY valid JSON with this exact structure (no markdown, no explanation):
     resolved_provider = None
     error_list = []
 
+    def _has_status(e: Exception, code: str) -> bool:
+        return code in str(e)
+
     # Execute request with automatic fallback rotation
-    for prov, key in queue:
+    for prov_idx, (prov, key) in enumerate(queue):
+        if prov_idx > 0:
+            print("  [Fallback] Rate limited on previous provider, waiting 30s before next...")
+            time.sleep(30)
+
+        retry_delay = 10
         print(f"[AI Auto-Match] Attempting template alignment using provider: {prov}...")
         
         if prov == "groq":
@@ -1310,13 +1339,14 @@ Return ONLY valid JSON with this exact structure (no markdown, no explanation):
                 "Content-Type": "application/json",
                 "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             }
-            for model in ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]:
+            for model in ["llama-3.3-70b-versatile", "gemma2-9b-it"]:
                 payload = {
                     "model": model,
                     "messages": [{"role": "user", "content": prompt}],
                     "temperature": 0.1,
-                    "response_format": {"type": "json_object"}
                 }
+                if model == "llama-3.3-70b-versatile":
+                    payload["response_format"] = {"type": "json_object"}
                 try:
                     req = urllib.request.Request(
                         url,
@@ -1324,13 +1354,16 @@ Return ONLY valid JSON with this exact structure (no markdown, no explanation):
                         headers=headers,
                         method="POST"
                     )
-                    with urllib.request.urlopen(req, timeout=20) as response:
+                    with urllib.request.urlopen(req, timeout=30) as response:
                         res_body = response.read().decode("utf-8")
                     resolved_provider = "groq"
                     break
                 except Exception as e:
                     print(f"  [Groq] Model {model} failed: {str(e)}")
                     error_list.append(f"Groq ({model}): {str(e)}")
+                    if _has_status(e, "429"):
+                        time.sleep(retry_delay)
+                        retry_delay = min(retry_delay + 10, 60)
             if res_body:
                 break
 
@@ -1343,7 +1376,7 @@ Return ONLY valid JSON with this exact structure (no markdown, no explanation):
                 "X-Title": "Consolidation Report Template Mapper",
                 "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             }
-            for model in ["google/gemma-4-31b-it:free", "meta-llama/llama-3.3-70b-instruct:free", "meta-llama/llama-3.2-3b-instruct:free"]:
+            for model in ["google/gemma-4-31b-it:free", "meta-llama/llama-3.3-70b-instruct:free", "deepseek/deepseek-r1:free"]:
                 payload = {
                     "model": model,
                     "messages": [{"role": "user", "content": prompt}],
@@ -1357,28 +1390,30 @@ Return ONLY valid JSON with this exact structure (no markdown, no explanation):
                         headers=headers,
                         method="POST"
                     )
-                    with urllib.request.urlopen(req, timeout=20) as response:
+                    with urllib.request.urlopen(req, timeout=30) as response:
                         res_body = response.read().decode("utf-8")
                     resolved_provider = "openrouter"
                     break
                 except Exception as e:
                     print(f"  [OpenRouter] Model {model} failed: {str(e)}")
                     error_list.append(f"OpenRouter ({model}): {str(e)}")
+                    if _has_status(e, "429"):
+                        time.sleep(retry_delay)
+                        retry_delay = min(retry_delay + 10, 60)
             if res_body:
                 break
 
         elif prov == "gemini":
-            for gemini_model in ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]:
+            headers = {
+                "Content-Type": "application/json",
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            }
+            for gemini_model in ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.0-flash-lite"]:
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/{gemini_model}:generateContent?key={key}"
-                headers = {
-                    "Content-Type": "application/json",
-                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                }
                 payload = {
                     "contents": [{"parts": [{"text": prompt}]}],
+                    "generationConfig": {"responseMimeType": "application/json"}
                 }
-                if gemini_model != "gemini-1.5-flash":
-                    payload["generationConfig"] = {"responseMimeType": "application/json"}
                 try:
                     req = urllib.request.Request(
                         url,
@@ -1386,18 +1421,22 @@ Return ONLY valid JSON with this exact structure (no markdown, no explanation):
                         headers=headers,
                         method="POST"
                     )
-                    with urllib.request.urlopen(req, timeout=25) as response:
+                    with urllib.request.urlopen(req, timeout=30) as response:
                         res_body = response.read().decode("utf-8")
                     resolved_provider = "gemini"
                     break
                 except Exception as e:
                     print(f"  [Gemini] {gemini_model} failed: {str(e)}")
                     error_list.append(f"Gemini ({gemini_model}): {str(e)}")
+                    if _has_status(e, "429"):
+                        time.sleep(retry_delay)
+                        retry_delay = min(retry_delay + 10, 60)
             if res_body:
                 break
 
     if not res_body:
-        raise HTTPException(502, f"AI Auto-Match failed: All available providers failed. Errors: {' | '.join(error_list)}")
+        advice = "Try: (1) wait 30-60 seconds and retry, (2) use a different API key, (3) add a Groq or OpenRouter API key in .env for more fallback options"
+        raise HTTPException(502, f"AI Auto-Match failed: All available providers failed. {advice}. Errors: {' | '.join(error_list)}")
 
     try:
         res_json = json.loads(res_body)

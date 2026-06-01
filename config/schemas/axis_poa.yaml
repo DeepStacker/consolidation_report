@@ -86,9 +86,9 @@ sheets:
       datatype: decimal
       default_value: 0.0
       mandatory: true
-    - canonical_name: ' Travel charges(If any)'
+    - canonical_name: Travel charges(If any)
       synonyms:
-      - ' Travel charges(If any)'
+      - Travel charges(If any)
       - Travel charges(If any)
       - Travel charges
       datatype: decimal
@@ -106,9 +106,9 @@ sheets:
       datatype: decimal
       default_value: 0.0
       mandatory: false
-    - canonical_name: ' Andaman & Nicobar Branch Expenses'
+    - canonical_name: Andaman & Nicobar Branch Expenses
       synonyms:
-      - ' Andaman & Nicobar Branch Expenses'
+      - Andaman & Nicobar Branch Expenses
       - Andaman & Nicobar Branch Expenses
       datatype: decimal
       default_value: 0.0
@@ -173,7 +173,7 @@ sheets:
     - Zone
     - SOL ID
     - BRANCH
-    - 'Location '
+    - Location
     - State
     - Total No.of A/cs
     - Assayer Name
@@ -182,11 +182,11 @@ sheets:
     - Assayer PAN
     - Contact Person
     - Schedule date
-    - "Audit \nStatus"
-    - "Audit \ncompletion date"
-    - "No of days \naudited "
-    - "No of days \naudited For client"
-    - "No of Packets \naudited"
+    - Audit Status
+    - Audit completion date
+    - No of days audited
+    - No of days audited For client
+    - No of Packets audited
     - Additional Packet
     - Assayer Reporting time at Branch
     - Audit start time
@@ -212,7 +212,7 @@ sheets:
     - A/C Closed
     - A/C Auctioned
     - Packet Missing
-    - 'Actual Audited (except already audited & A/C closed) '
+    - Actual Audited (except already audited & A/C closed)
     - Extra audited pouches
     - Total No.of packets actually audited
     - Type oof Audit
@@ -221,14 +221,12 @@ sheets:
     - Urban/ Rural
     - T & F Client fee
     - POA Client Fees
-    - 'Cancelled
-
-      Client fee'
-    - billing  remarks
+    - Cancelled Client fee
+    - billing remarks
     - Touch and Feel Audit Packet Count
-    - "POA \nPacket count"
-    - Additional Packet  T& F
-    - Additional Packet  POA
+    - POA Packet count
+    - Additional Packet T& F
+    - Additional Packet POA
     - oracle_id
     - Address
     hidden_columns:
@@ -274,9 +272,9 @@ sheets:
       - Branch Name
       datatype: string
       mandatory: true
-    - canonical_name: 'Location '
+    - canonical_name: Location
       synonyms:
-      - 'Location '
+      - Location
       - Location
       datatype: string
       mandatory: false
@@ -328,39 +326,39 @@ sheets:
       - Audit schedule date
       datatype: date
       mandatory: false
-    - canonical_name: "Audit \nStatus"
+    - canonical_name: Audit Status
       synonyms:
-      - "Audit \nStatus"
+      - Audit Status
       - Audit Status
       datatype: string
       mandatory: false
-    - canonical_name: "Audit \ncompletion date"
+    - canonical_name: Audit completion date
       synonyms:
-      - "Audit \ncompletion date"
+      - Audit completion date
       - Audit completion date
       - End Date
       datatype: date
       mandatory: false
-    - canonical_name: "No of days \naudited "
+    - canonical_name: No of days audited
       synonyms:
-      - "No of days \naudited "
+      - No of days audited
       - No of days audited
       - No. of Visit
-      - "No of days \naudited"
+      - No of days audited
       datatype: integer
       default_value: 0
       mandatory: false
-    - canonical_name: "No of days \naudited For client"
+    - canonical_name: No of days audited For client
       synonyms:
-      - "No of days \naudited For client"
+      - No of days audited For client
       - No of days audited For client
       - No. of Visit
       datatype: integer
       default_value: 0
       mandatory: false
-    - canonical_name: "No of Packets \naudited"
+    - canonical_name: No of Packets audited
       synonyms:
-      - "No of Packets \naudited"
+      - No of Packets audited
       - No of Packets audited
       datatype: integer
       default_value: 0
@@ -483,15 +481,13 @@ sheets:
     - canonical_name: Report
       datatype: string
       mandatory: false
-    - canonical_name: 'Actual Audited (except already audited & A/C closed) '
+    - canonical_name: Actual Audited (except already audited & A/C closed)
       datatype: string
       mandatory: false
     - canonical_name: Aadhar No
       datatype: string
       mandatory: false
-    - canonical_name: 'Cancelled
-
-        Client fee'
+    - canonical_name: Cancelled Client fee
       datatype: string
       mandatory: false
     - canonical_name: Address
@@ -506,19 +502,19 @@ sheets:
     - canonical_name: POA Client Fees
       datatype: string
       mandatory: false
-    - canonical_name: billing  remarks
+    - canonical_name: billing remarks
       datatype: string
       mandatory: false
     - canonical_name: Touch and Feel Audit Packet Count
       datatype: string
       mandatory: false
-    - canonical_name: "POA \nPacket count"
+    - canonical_name: POA Packet count
       datatype: string
       mandatory: false
-    - canonical_name: Additional Packet  T& F
+    - canonical_name: Additional Packet T& F
       datatype: string
       mandatory: false
-    - canonical_name: Additional Packet  POA
+    - canonical_name: Additional Packet POA
       datatype: string
       mandatory: false
     - canonical_name: oracle_id
