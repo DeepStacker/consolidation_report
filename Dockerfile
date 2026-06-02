@@ -35,11 +35,6 @@ COPY config/ ./config/
 # Copy compiled static frontend assets from Stage 1
 COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
 
-# Download self-hosted Google Fonts (not stored in git — HF rejects binary files)
-RUN mkdir -p frontend/dist/fonts
-COPY scripts/download_fonts.py /tmp/download_fonts.py
-RUN python3 /tmp/download_fonts.py && rm /tmp/download_fonts.py
-
 # Expose default Hugging Face Spaces port (7860)
 EXPOSE 7860
 
