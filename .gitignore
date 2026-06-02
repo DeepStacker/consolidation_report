@@ -9,6 +9,9 @@ build/
 # Excel source/output files
 *.xlsx
 
+# Font binaries (downloaded at Docker build time)
+frontend/public/fonts/*.ttf
+
 # Run audit logs
 run_audit_log_*.json
 

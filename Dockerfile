@@ -11,8 +11,32 @@ WORKDIR /app/frontend
 COPY frontend/package*.json ./
 RUN npm install
 
-# Copy frontend source and build static assets
+# Copy frontend source
 COPY frontend/ ./
+
+# Download self-hosted Google Fonts (not stored in git — HF rejects binary files)
+RUN mkdir -p public/fonts && node -e "
+const https = require('https');
+const fs = require('fs');
+const url = 'https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@300;400;500;600&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap';
+https.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' } }, res => {
+  let css = '';
+  res.on('data', c => css += c);
+  res.on('end', () => {
+    const re = /url\(([^)]+)\)/g;
+    let m, done = 0;
+    while ((m = re.exec(css)) !== null) {
+      const fontUrl = m[1];
+      const fname = fontUrl.split('/').pop().split('?')[0];
+      https.get(fontUrl, r => r.pipe(fs.createWriteStream('public/fonts/' + fname)).on('finish', () => {
+        if (++done >= 15) console.log('Fonts downloaded');
+      }));
+    }
+  });
+});
+"
+
+# Build static assets
 RUN npm run build
 
 # --- Stage 2: Build FastAPI Python Server ---
