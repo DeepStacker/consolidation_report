@@ -36,18 +36,9 @@ COPY config/ ./config/
 COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
 
 # Download self-hosted Google Fonts (not stored in git — HF rejects binary files)
-RUN mkdir -p frontend/dist/fonts && python3 -c "
-import urllib.request, re
-url = 'https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@300;400;500;600&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap'
-req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-css = urllib.request.urlopen(req, timeout=30).read().decode('utf-8')
-for match in re.finditer(r'url\(([^)]+)\)', css):
-    font_url = match.group(1)
-    fname = font_url.split('/')[-1].split('?')[0]
-    urllib.request.urlretrieve(font_url, f'frontend/dist/fonts/{fname}')
-    print(f'Downloaded {fname}')
-print('Font download complete')
-"
+RUN mkdir -p frontend/dist/fonts
+COPY scripts/download_fonts.py /tmp/download_fonts.py
+RUN python3 /tmp/download_fonts.py && rm /tmp/download_fonts.py
 
 # Expose default Hugging Face Spaces port (7860)
 EXPOSE 7860
