@@ -1136,38 +1136,66 @@ def get_consolidated_preview(sheet_name: str, max_rows: int = 20) -> dict:
 
 
 def list_consolidated_sheets() -> List[str]:
-    """Return all sheet names in the consolidated report."""
+    """Return all sheet names in the consolidated report.
+    Falls back to unique sheet names from existing schema YAML files
+    when the consolidated Excel file has not been generated yet."""
     filepath = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "Feb'26 consolidated.xlsx")
-    if not os.path.exists(filepath):
-        return []
-    try:
-        import openpyxl
-        wb = openpyxl.load_workbook(filepath, read_only=True)
-        names = list(wb.sheetnames)
-        wb.close()
-        return names
-    except Exception:
-        return []
+    if os.path.exists(filepath):
+        try:
+            import openpyxl
+            wb = openpyxl.load_workbook(filepath, read_only=True)
+            names = list(wb.sheetnames)
+            wb.close()
+            return names
+        except Exception:
+            pass
+    # Fallback: gather unique sheet names from existing schema YAML files
+    sheets: set[str] = set()
+    if os.path.isdir(SCHEMAS_DIR):
+        for fname in os.listdir(SCHEMAS_DIR):
+            if not fname.endswith((".yaml", ".yml")):
+                continue
+            schema = _read_schema_yaml(os.path.join(SCHEMAS_DIR, fname))
+            if schema and isinstance(schema.get("sheets"), dict):
+                sheets.update(schema["sheets"].keys())
+    return sorted(sheets, key=lambda x: (x != "Payment Tracker", x))
 
 
 @app.get("/api/consolidated-headers")
 async def consolidated_headers():
-    """Return per-sheet headers from the consolidated report."""
+    """Return per-sheet headers from the consolidated report.
+    Falls back to unique canonical columns from existing schema YAML files
+    when the consolidated Excel file has not been generated yet."""
     filepath = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "Feb'26 consolidated.xlsx")
     result = {}
-    if not os.path.exists(filepath):
-        return result
-    try:
-        import openpyxl
-        wb = openpyxl.load_workbook(filepath, read_only=True)
-        for sname in wb.sheetnames:
-            ws = wb[sname]
-            row = next(ws.iter_rows(values_only=True), [])
-            headers = [_normalize_header(str(c)) for c in row if c is not None and str(c).strip()]
-            result[sname] = headers
-        wb.close()
-    except Exception:
-        pass
+    if os.path.exists(filepath):
+        try:
+            import openpyxl
+            wb = openpyxl.load_workbook(filepath, read_only=True)
+            for sname in wb.sheetnames:
+                ws = wb[sname]
+                row = next(ws.iter_rows(values_only=True), [])
+                headers = [_normalize_header(str(c)) for c in row if c is not None and str(c).strip()]
+                result[sname] = headers
+            wb.close()
+        except Exception:
+            pass
+    # Fallback: gather unique canonical columns per sheet from existing schemas
+    if not result and os.path.isdir(SCHEMAS_DIR):
+        for fname in os.listdir(SCHEMAS_DIR):
+            if not fname.endswith((".yaml", ".yml")):
+                continue
+            schema = _read_schema_yaml(os.path.join(SCHEMAS_DIR, fname))
+            if not schema or not isinstance(schema.get("sheets"), dict):
+                continue
+            for sheet_name, sheet_def in schema["sheets"].items():
+                if sheet_name not in result:
+                    result[sheet_name] = []
+                cols = sheet_def.get("columns", [])
+                for c in cols:
+                    canon = c.get("canonical_name") or c.get("canonical", "")
+                    if canon and canon not in result[sheet_name]:
+                        result[sheet_name].append(canon)
     return result
 
 
