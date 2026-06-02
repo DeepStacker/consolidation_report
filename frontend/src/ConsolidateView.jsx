@@ -1,12 +1,14 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import AuditPanel from './AuditPanel';
 import PreviewEditor from './PreviewEditor';
+import { useToast } from './ToastContext';
 
 const API_BASE = (window.location.origin === "http://localhost:5173" || window.location.origin === "http://127.0.0.1:5173")
   ? "http://127.0.0.1:8000"
   : window.location.origin;
 
 export default function ConsolidateView() {
+  const toast = useToast();
   const [selectedFiles, setSelectedFiles] = useState([]);
   const [matchResults, setMatchResults] = useState(null);
   const [allSchemas, setAllSchemas] = useState([]);
@@ -22,6 +24,12 @@ export default function ConsolidateView() {
   const [logOpen, setLogOpen] = useState(false);
   const [batches, setBatches] = useState([]);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [fileSearch, setFileSearch] = useState("");
+  const [previewLoading, setPreviewLoading] = useState(false);
+
+  const filteredFiles = fileSearch.trim()
+    ? selectedFiles.filter(f => f.name.toLowerCase().includes(fileSearch.toLowerCase()))
+    : selectedFiles;
 
   const fileInputRef = useRef(null);
   const terminalEndRef = useRef(null);
@@ -50,7 +58,8 @@ export default function ConsolidateView() {
 
   const runPreview = useCallback(async (files) => {
     const names = files.map(f => f.name);
-    if (!names.length) { setMatchResults(null); setAllSchemas([]); return; }
+    if (!names.length) { setMatchResults(null); setAllSchemas([]); setPreviewLoading(false); return; }
+    setPreviewLoading(true);
     try {
       // Read column headers from each file for column-header based matching
       const fileHeaders = {};
@@ -80,10 +89,14 @@ export default function ConsolidateView() {
       } else {
         setMatchResults({ matches: {} });
         setAllSchemas([]);
+        toast("Template matching service unavailable", "warning");
       }
     } catch (e) {
       setMatchResults({ matches: {} });
       setAllSchemas([]);
+      toast(`File matching failed: ${e.message}`, "error");
+    } finally {
+      setPreviewLoading(false);
     }
   }, []);
 
@@ -111,7 +124,7 @@ export default function ConsolidateView() {
   const addFiles = (files) => {
     const validFiles = files.filter(f => f.name.endsWith('.xlsx') || f.name.endsWith('.xls'));
     if (validFiles.length === 0) {
-      alert("Please upload only Excel spreadsheets (.xlsx, .xls)!");
+      toast("Please upload only Excel spreadsheets (.xlsx, .xls)!", "warning");
       return;
     }
     setSelectedFiles(prev => {
@@ -131,9 +144,11 @@ export default function ConsolidateView() {
   };
 
   const clearAll = () => {
+    if (!window.confirm("Remove all files and reset the workspace?")) return;
     setSelectedFiles([]); setMatchResults(null); setAllSchemas([]);
     setManualMappings({}); setSuccess(false);
     setFileId(null); setAuditLog(null); setAuditSummary(null); setLogs([]); setLogOpen(false);
+    toast("Workspace cleared", "info");
   };
 
   const clearHistory = async () => {
@@ -141,7 +156,8 @@ export default function ConsolidateView() {
     try {
       await fetch(`${API_BASE}/api/batches`, { method: "DELETE" });
       setBatches([]);
-    } catch (e) { /* ignore */ }
+      toast("Run history cleared", "success");
+    } catch (e) { toast("Failed to clear run history", "error"); }
   };
 
   // Keyboard: Enter to run
@@ -151,7 +167,9 @@ export default function ConsolidateView() {
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  });
+  }, [canRun, runConsolidation]);
+
+  // Auto-scroll terminal
 
   const formatBytes = (bytes, decimals = 2) => {
     if (bytes === 0) return '0 Bytes';
@@ -167,7 +185,7 @@ export default function ConsolidateView() {
   const unmatchedCount = matchResults ? selectedFiles.filter(f => !getFileMatch(f.name).length).length : 0;
   const mappedUnmatched = matchResults ? selectedFiles.filter(f => !getFileMatch(f.name).length && hasManualMapping(f.name)).length : 0;
   const totalSize = selectedFiles.reduce((sum, f) => sum + (f.size || 0), 0);
-  const canRun = selectedFiles.length > 0 && !running && (matchedCount > 0 || mappedUnmatched > 0);
+  const canRun = selectedFiles.length > 0 && !running && !previewLoading && (matchedCount > 0 || mappedUnmatched > 0);
 
   const runConsolidation = async () => {
     if (!canRun) return;
@@ -193,7 +211,7 @@ export default function ConsolidateView() {
         setLogs(prev => [...prev, "[SYSTEM] Pipeline executed successfully!", "[SYSTEM] Ready to download."]);
       } else {
         setSuccess(false);
-        alert(`Consolidation failed: ${result.error || "Unknown error"}`);
+        toast(`Consolidation failed: ${result.error || "Unknown error"}`, "error");
       }
     } catch (err) {
       setSuccess(false);
@@ -269,12 +287,19 @@ export default function ConsolidateView() {
 
         {selectedFiles.length > 0 && (
           <div className="consolidate-file-list">
+            {selectedFiles.length > 3 && (
+              <div style={{ padding: '0 0 8px 0' }}>
+                <input className="col-filter-input" type="text" placeholder="Filter files..."
+                  value={fileSearch} onChange={e => setFileSearch(e.target.value)}
+                  style={{ width: '100%', padding: '8px 12px', boxSizing: 'border-box' }} />
+              </div>
+            )}
             <div className="consolidate-file-list-header">
-              <span>Selected files</span>
+              <span>Selected files{fileSearch ? ` (${filteredFiles.length})` : ''}</span>
               <button className="btn-sm consolidate-add-btn" onClick={() => fileInputRef.current.click()}
                 title="Add more files">+ Add files</button>
             </div>
-            {selectedFiles.map((file, idx) => {
+            {filteredFiles.map((file, idx) => {
               const match = getFileMatch(file.name);
               const matched = match.length > 0;
               const manual = manualMappings[file.name];
@@ -329,6 +354,11 @@ export default function ConsolidateView() {
                 </div>
               );
             })}
+            {filteredFiles.length === 0 && fileSearch && (
+              <div style={{ padding: '20px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.82rem' }}>
+                No files match "<strong style={{ color: 'var(--text-secondary)' }}>{fileSearch}</strong>"
+              </div>
+            )}
           </div>
         )}
 
@@ -346,8 +376,10 @@ export default function ConsolidateView() {
             style={{ opacity: canRun ? 1 : 0.5 }}>
             {running ? (
               <><span className="spinner"></span> Processing...</>
+            ) : previewLoading ? (
+              <><span className="spinner"></span> Analyzing files...</>
             ) : !matchResults ? (
-              "Analyzing files..."
+              "Ready"
             ) : (
               "▶ Run Consolidation"
             )}
@@ -403,21 +435,24 @@ export default function ConsolidateView() {
           </div>
         )}
 
-        {batches.length > 0 && (
-          <div className="consolidate-history" style={{ animation: 'fadeSlideUp 0.35s ease' }}>
-            <div className="consolidate-logs-header" onClick={() => setHistoryOpen(!historyOpen)}
-              style={{ borderBottom: historyOpen ? 'none' : undefined, borderRadius: historyOpen ? '5px 5px 0 0' : '5px' }}>
-              <span className="consolidate-logs-toggle">{historyOpen ? '▼' : '▶'}</span>
-              <span style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>📋 Run History ({batches.length})</span>
-              <span className="consolidate-logs-preview">{formatTime(batches[0]?.timestamp)}</span>
-              {batches.length > 0 && (
+        <div className="consolidate-history" style={{ animation: 'fadeSlideUp 0.35s ease' }}>
+          <div className="consolidate-logs-header" onClick={() => setHistoryOpen(!historyOpen)}
+            style={{ borderBottom: historyOpen && batches.length > 0 ? 'none' : undefined, borderRadius: historyOpen || batches.length > 0 ? '5px 5px 0 0' : '5px' }}>
+            <span className="consolidate-logs-toggle">{historyOpen ? '▼' : '▶'}</span>
+            <span style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>📋 Run History ({batches.length})</span>
+            {batches.length > 0 && <span className="consolidate-logs-preview">{formatTime(batches[0]?.timestamp)}</span>}
+            {batches.length > 0 && (
                 <button className="btn-sm" onClick={e => { e.stopPropagation(); clearHistory(); }}
                   style={{ marginLeft: 'auto', fontSize: '0.7rem', padding: '1px 6px' }}>Clear</button>
               )}
             </div>
             {historyOpen && (
               <div className="consolidate-history-list">
-                {batches.map((b, i) => {
+                {batches.length === 0 ? (
+                  <div style={{ padding: '40px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.82rem' }}>
+                    No runs yet — upload files and run consolidation to see history here
+                  </div>
+                ) : batches.map((b, i) => {
                   const sc = b.health_score ?? 100;
                   const scColor = sc >= 90 ? 'var(--accent-success)' : sc >= 60 ? 'var(--accent-warning)' : 'var(--accent-error)';
                   const isLatest = i === 0 && fileId === b.file_id;
@@ -449,12 +484,10 @@ export default function ConsolidateView() {
                     </div>
                   );
                 })}
-              </div>
-            )}
+            </div>
+          )}
           </div>
-        )}
-
-      </div>
+        </div>
 
       {showPreview && fileId && (
         <PreviewEditor fileId={fileId} onClose={(newFileId) => {

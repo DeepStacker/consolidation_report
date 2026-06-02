@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo, memo } from 'react';
+import { useToast } from './ToastContext';
 
 const API_BASE = (window.location.origin === "http://localhost:5173" || window.location.origin === "http://127.0.0.1:5173")
   ? "http://127.0.0.1:8000"
@@ -226,6 +227,7 @@ const PreviewRow = memo(function PreviewRow({ row, ri, headers, zoom, issues, ce
 });
 
 export default function PreviewEditor({ fileId, onClose }) {
+  const toast = useToast();
   const [sheets, setSheets] = useState({});
   const [sheetNames, setSheetNames] = useState([]);
   const [activeSheet, setActiveSheet] = useState("");
@@ -248,7 +250,6 @@ export default function PreviewEditor({ fileId, onClose }) {
   const [selectedColumnIdx, setSelectedColumnIdx] = useState(null);
   const [selectedRowIdx, setSelectedRowIdx] = useState(null);
   const [columnWidths, setColumnWidths] = useState({});
-  const [cutData, setCutData] = useState(null);
 
   const tableRef = useRef(null);
   const resizeColRef = useRef(null);
@@ -409,7 +410,7 @@ export default function PreviewEditor({ fileId, onClose }) {
         }
         setLoading(false);
       })
-      .catch(e => { alert(String(e)); setLoading(false); });
+      .catch(e => { toast(String(e), "error"); setLoading(false); });
   }, [fileId]);
 
   const getOriginalValue = useCallback((rowIdx, col) => {
@@ -544,7 +545,6 @@ export default function PreviewEditor({ fileId, onClose }) {
       }
     }
 
-    setCutData(null);
     bump();
   }, [focusedCell, selectedColumnIdx, selectedRowIdx, ensureSheetEdits, headers, getOriginalValue, bump]);
 
@@ -601,7 +601,6 @@ export default function PreviewEditor({ fileId, onClose }) {
     const text = val !== null && val !== undefined ? String(val) : '';
 
     navigator.clipboard.writeText(text).catch(() => {});
-    setCutData({ row: focusedCell.row, col: focusedCell.col });
   }, [focusedCell, activeSheet, rows, headers]);
 
   /* ── Global keydown handler for clipboard ops ── */
@@ -771,7 +770,7 @@ export default function PreviewEditor({ fileId, onClose }) {
         window.open(`${API_BASE}/api/download/${result.file_id}`, '_blank');
         onClose(result.file_id);
       }, 600);
-    } catch (e) { alert(`Save failed: ${e.message}`); setSaving(false); }
+    } catch (e) { toast(`Save failed: ${e.message}`, "error"); setSaving(false); }
   };
 
   const handleClose = useCallback(() => {

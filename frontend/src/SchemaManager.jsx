@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { useToast } from './ToastContext';
 
 const API_BASE = (window.location.origin === "http://localhost:5173" || window.location.origin === "http://127.0.0.1:5173")
   ? "http://127.0.0.1:8000"
@@ -168,6 +169,7 @@ const sortCanonicalsBySequence = (list) => {
 };
 
 export default function SchemaManager() {
+  const toast = useToast();
   const [schemas, setSchemas] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -190,6 +192,7 @@ export default function SchemaManager() {
   const [createSheetMeta, setCreateSheetMeta] = useState({}); // destSheet -> { client_column, s_no_column, header_row, data_start_row, column_order, hidden_columns }
   const [createStep, setCreateStep] = useState("upload"); // upload | map | done
   const [saving, setSaving] = useState(false);
+  const [parsingFile, setParsingFile] = useState(false);
   
   const [searchQuery, setSearchQuery] = useState("");
   const [sortField, setSortField] = useState("name");
@@ -203,7 +206,6 @@ export default function SchemaManager() {
   const [virtualSearch, setVirtualSearch] = useState("");
   const [geminiApiKey, setGeminiApiKey] = useState(() => localStorage.getItem("gemini_api_key") || "");
   const [hasServerApiKey, setHasServerApiKey] = useState(false);
-  const [showMagicDropdown, setShowMagicDropdown] = useState(false);
   const [runningAiMatch, setRunningAiMatch] = useState(false);
   const [aiMatchLoadingText, setAiMatchLoadingText] = useState("Matching...");
   const [targetSheet, setTargetSheet] = useState("");  // which target sheet to map to
@@ -211,7 +213,6 @@ export default function SchemaManager() {
   const [sheetTargetHeaders, setSheetTargetHeaders] = useState({}); // sheetName → [headers]
   const [showQuickLook, setShowQuickLook] = useState(false);
   const [quickLookData, setQuickLookData] = useState(null); // {headers, rows} for the target sheet
-  const [loadingQuickLook, setLoadingQuickLook] = useState(false);
   
   // Mapping Redesign states
   const [activeDestination, setActiveDestination] = useState(""); // "Payment Tracker" | "Master Data" | ...
@@ -303,7 +304,7 @@ export default function SchemaManager() {
         setSelectedMatrixSheet(sheetNames[0]);
       }
     } catch (e) {
-      alert(`Failed to load cross-mapping details: ${e.message}`);
+      toast(`Failed to load cross-mapping details: ${e.message}`, "error");
       setShowMatrix(false);
     } finally {
       setLoadingMatrix(false);
@@ -321,17 +322,21 @@ export default function SchemaManager() {
   // Re-fetch target preview when sheet tab changes while Quick Look is open
   useEffect(() => {
     if (!showQuickLook) return;
-    setLoadingQuickLook(true);
     const sh = createSheets[activeSheetTab];
-    // Derive target sheet from source sheet name (they match: "Payment Tracker" → "Payment Tracker")
-    const target = targetSheetOptions.includes(sh?.name) ? sh.name : (targetSheetOptions[0] || "Payment Tracker");
-    fetch(`${API_BASE}/api/consolidated-preview?sheet_name=${encodeURIComponent(target)}`)
-      .then(r => r.ok ? r.json() : { headers: [], rows: [] })
-      .then(d => setQuickLookData(d))
-      .catch(() => {})
-      .finally(() => setLoadingQuickLook(false));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeSheetTab, targetSheet, showQuickLook]);
+    if (sh) {
+      setQuickLookData({
+        headers: sh.columns || [],
+        rows: (sh.preview || []).map(r => {
+          const row = {};
+          (sh.columns || []).forEach(col => {
+            row[col] = r[col] !== undefined ? r[col] : '';
+          });
+          return row;
+        }),
+        sourceSheetName: sh.name,
+      });
+    }
+  }, [activeSheetTab, showQuickLook, createSheets]);
 
   // Load available target sheets from consolidated report
   useEffect(() => {
@@ -365,7 +370,7 @@ export default function SchemaManager() {
       const d = await r.json();
       setSchemas(prev => prev.map(s => s.client_id === cid ? { ...s, active: d.active } : s));
     } catch (e) { 
-      alert(`Failed to toggle template status: ${e.message}`); 
+      toast(`Failed to toggle template status: ${e.message}`, "error"); 
     }
   };
 
@@ -378,7 +383,7 @@ export default function SchemaManager() {
       if (editingId === cid) resetCreate();
       load();
     } catch (e) { 
-      alert(`Delete failed: ${e.message}`); 
+      toast(`Delete failed: ${e.message}`, "error"); 
     }
   };
 
@@ -399,6 +404,7 @@ export default function SchemaManager() {
     setActiveSheetTab(0);
     setShowCreate(false);
     setDialogColumn(null);
+    setVirtualSearch('');
     setDialogTemp(null);
     setColFilter("");
     if (targetSheetOptions.length > 0) setActiveDestination(targetSheetOptions[0]);
@@ -484,7 +490,7 @@ export default function SchemaManager() {
       if (sheetNames.length > 0) setActiveDestination(sheetNames[0]);
       setShowCreate(true);
     } catch (e) { 
-      alert(`Failed to load schema details: ${e.message}`); 
+      toast(`Failed to load schema details: ${e.message}`, "error"); 
     }
   };
 
@@ -558,7 +564,7 @@ export default function SchemaManager() {
       if (sheetNames.length > 0) setActiveDestination(sheetNames[0]);
       setShowCreate(true);
     } catch (e) { 
-      alert(`Copy failed: ${e.message}`); 
+      toast(`Copy failed: ${e.message}`, "error"); 
     }
   };
 
@@ -660,7 +666,7 @@ export default function SchemaManager() {
   // One-click AI semantic auto-match using Google Gemini
   const handleAiAutoAlign = async () => {
     if (!geminiApiKey.trim() && !hasServerApiKey) {
-      alert("Please enter a valid API Key (Gemini, Groq, or OpenRouter) first!");
+      toast("Please enter a valid API Key (Gemini, Groq, or OpenRouter) first!", "warning");
       return;
     }
     
@@ -792,7 +798,7 @@ export default function SchemaManager() {
         throw new Error("API responded with success: false");
       }
     } catch (err) {
-      alert(`Gemini AI alignment failed: ${err.message}`);
+      toast(`Gemini AI alignment failed: ${err.message}`, "error");
       setMagicFeedback("❌ AI Mapping failed");
     } finally {
       clearInterval(intervalId);
@@ -808,10 +814,11 @@ export default function SchemaManager() {
     const file = e.dataTransfer?.files?.[0] || e.target?.files?.[0];
     if (!file) return;
     if (!file.name.endsWith('.xlsx') && !file.name.endsWith('.xls')) { 
-      alert("Please upload valid Excel workbooks (.xlsx or .xls)!"); 
+      toast("Please upload valid Excel workbooks (.xlsx or .xls)!", "warning"); 
       return; 
     }
     setCreateFile(file);
+    setParsingFile(true);
     const fd = new FormData();
     fd.append("file", file);
     try {
@@ -869,11 +876,14 @@ export default function SchemaManager() {
         setCreateName(cid);
         setCreatePattern(`*${cid}*`);
       }
-      setCreateStep("map");
+      toast("Spreadsheet parsed successfully! Review the summary below, then click Continue to Mapping.", "success");
+      // Stay on upload step — user clicks "Continue to Mapping" to proceed
       setActiveSheetTab(0);
       if (targetSheetOptions.length > 0) setActiveDestination(targetSheetOptions[0]);
     } catch (err) { 
-      alert(`Excel Analysis failed: ${err.message}`); 
+      toast(`Excel Analysis failed: ${err.message}`, "error"); 
+    } finally {
+      setParsingFile(false);
     }
   };
 
@@ -883,11 +893,12 @@ export default function SchemaManager() {
     const file = e.dataTransfer?.files?.[0] || e.target?.files?.[0];
     if (!file) return;
     if (!file.name.endsWith('.xlsx') && !file.name.endsWith('.xls')) { 
-      alert("Please upload valid Excel workbooks (.xlsx or .xls)!"); 
+      toast("Please upload valid Excel workbooks (.xlsx or .xls)!", "warning"); 
       return; 
     }
     const fd = new FormData();
     fd.append("file", file);
+    setParsingFile(true);
     try {
       const r = await fetch(`${API_BASE}/api/analyze-excel`, { method: "POST", body: fd });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -940,7 +951,9 @@ export default function SchemaManager() {
       setCreateSumColumns(sums);
       setCreatePreviews(prevs);
     } catch (err) { 
-      alert(`Replace failed: ${err.message}`); 
+      toast(`Replace failed: ${err.message}`, "error"); 
+    } finally {
+      setParsingFile(false);
     }
   };
 
@@ -972,6 +985,7 @@ export default function SchemaManager() {
   const openMappingDialog = (cname) => {
     const m = createMappings[activeDestination]?.[cname] || {};
     setDialogColumn(cname);
+    setVirtualSearch('');
     let defVal = m.default_value;
     if (defVal === 'null' || defVal === null || defVal === undefined) defVal = '';
     setDialogTemp({
@@ -1005,14 +1019,15 @@ export default function SchemaManager() {
       return m;
     });
     setDialogColumn(null);
+    setVirtualSearch('');
     setDialogTemp(null);
   };
 
   // Save full definition to database
   const handleSave = async () => {
     const cid = createName.trim();
-    if (!cid) { alert("Please enter a unique template ID."); return; }
-    if (!createSheets.length && Object.keys(createMappings).length === 0) { alert("Please upload Excel sheets to parse."); return; }
+    if (!cid) { toast("Please enter a unique template ID.", "warning"); return; }
+    if (!createSheets.length && Object.keys(createMappings).length === 0) { toast("Please upload Excel sheets to parse.", "warning"); return; }
     setSaving(true);
     
     // Build sheet data from destination-keyed mappings
@@ -1122,7 +1137,7 @@ export default function SchemaManager() {
       load();
       setTimeout(() => { resetCreate(); }, 1200);
     } catch (e) { 
-      alert(`Save failed: ${e.message}`); 
+      toast(`Save failed: ${e.message}`, "error"); 
     } finally { 
       setSaving(false); 
     }
@@ -1476,7 +1491,14 @@ export default function SchemaManager() {
 
           {/* Full-Width Spacious Repository Table */}
           <div className="panel" style={{ padding: '24px', overflowX: 'auto' }}>
-            {loading ? (
+            {error ? (
+              <div style={{ padding: '60px 40px', textAlign: 'center', color: 'var(--accent-error)' }}>
+                <span style={{ fontSize: '2rem' }}>⚠️</span>
+                <p style={{ fontWeight: 600, marginTop: '8px' }}>Failed to load templates</p>
+                <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', margin: '4px 0 12px' }}>{error}</p>
+                <button className="btn-sm" onClick={load}>Retry</button>
+              </div>
+            ) : loading ? (
               <table className="schema-table">
                 <thead><tr>
                   <th style={{ width: '70px' }}>Active</th>
@@ -1629,9 +1651,69 @@ export default function SchemaManager() {
               style={{ width: '32px', height: '32px', fontSize: '1.1rem' }} title="Return to Explorer">✕</button>
           </div>
 
+          {/* Step Indicator */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '10px', padding: '8px 12px', background: 'rgba(255,255,255,0.01)', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-color)' }}>
+            {(() => {
+              const steps = [
+                { key: 'upload', label: 'Upload Excel', icon: '📊' },
+                { key: 'map', label: 'Column Mapping', icon: '🔗' },
+                { key: 'done', label: 'Save & Done', icon: '✓' },
+              ];
+              const stepOrder = ['upload', 'map', 'done'];
+              const currentIdx = stepOrder.indexOf(createStep);
+              const uploadCompleted = createStep === 'upload' && createFile;
+              return steps.map((step, i) => (
+                <React.Fragment key={step.key}>
+                  {i > 0 && <div style={{ flex: 1, height: '1px', background: i <= currentIdx || (i === 1 && uploadCompleted) ? 'var(--accent-success)' : 'var(--border-color)', margin: '0 4px' }} />}
+                  <div style={{
+                    display: 'flex', alignItems: 'center', gap: '5px',
+                    padding: '4px 10px', borderRadius: '6px', whiteSpace: 'nowrap',
+                    fontSize: '0.75rem', fontWeight: 600,
+                    background: i === currentIdx && !(i === 0 && uploadCompleted) ? 'rgba(99,102,241,0.12)' : 
+                      (i < currentIdx || (i === 0 && uploadCompleted)) ? 'rgba(16,185,129,0.08)' : 'transparent',
+                    border: '1px solid',
+                    borderColor: i === currentIdx && !(i === 0 && uploadCompleted) ? 'rgba(99,102,241,0.3)' : 
+                      (i < currentIdx || (i === 0 && uploadCompleted)) ? 'rgba(16,185,129,0.2)' : 'transparent',
+                    color: i === currentIdx && !(i === 0 && uploadCompleted) ? '#fff' : 
+                      (i < currentIdx || (i === 0 && uploadCompleted)) ? 'var(--accent-success)' : 'var(--text-muted)',
+                  }}>
+                    <span style={{ fontSize: '0.8rem' }}>{step.icon}</span>
+                    <span>{step.label}</span>
+                  </div>
+                </React.Fragment>
+              ));
+            })()}
+          </div>
+
           {/* BUILDER WORKSPACE STEP 1: PARSE EXCEL */}
           {createStep === "upload" && (
             <div className="panel" style={{ padding: '32px 24px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '200px', gap: '10px' }}>
+              {parsingFile ? (
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '16px' }}>
+                  <span className="spinner" style={{ width: '32px', height: '32px' }}></span>
+                  <h3 style={{ fontSize: '1rem', fontWeight: 700, margin: 0 }}>Parsing spreadsheet...</h3>
+                  <p style={{ color: 'var(--text-secondary)', fontSize: '0.8rem' }}>Scanning worksheets, headers, and column shapes</p>
+                </div>
+              ) : createFile ? (
+                /* Upload complete — stay on upload step with success feedback */
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '14px', width: '100%', maxWidth: '500px' }}>
+                  <div style={{ width: '48px', height: '48px', borderRadius: '99px', background: 'rgba(16,185,129,0.1)', color: 'var(--accent-success)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.3rem', fontWeight: 700 }}>✓</div>
+                  <h3 style={{ fontSize: '1.1rem', fontWeight: 700, margin: 0 }}>Spreadsheet Parsed Successfully</h3>
+                  <div style={{ textAlign: 'center', color: 'var(--text-secondary)', fontSize: '0.82rem', lineHeight: 1.5 }}>
+                    <div><strong style={{ color: '#fff' }}>{createFile.name}</strong></div>
+                    <div style={{ marginTop: '4px' }}>{createSheets.length} sheet(s) · {createSheets.reduce((s, sh) => s + (sh.columns?.length || 0), 0)} columns detected</div>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                      Sheets: {createSheets.map((sh, si) => <span key={si}><strong>{sh.name}</strong> ({sh.columns?.length || 0} cols){si < createSheets.length - 1 ? ', ' : ''}</span>)}
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', gap: '10px', marginTop: '6px' }}>
+                    <button className="btn-secondary" style={{ padding: '8px 18px', fontSize: '0.8rem' }} onClick={resetCreate}>Cancel</button>
+                    <button className="btn-primary" style={{ padding: '8px 22px', fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '6px' }} onClick={() => setCreateStep("map")}>
+                      Continue to Mapping <span style={{ fontSize: '0.9rem' }}>→</span>
+                    </button>
+                  </div>
+                </div>
+              ) : (
               <div className="dropzone"
                 onDragOver={e => e.preventDefault()}
                 onDrop={handleFileDrop}
@@ -1646,8 +1728,9 @@ export default function SchemaManager() {
                   The engine will scan all worksheets, headers, and column shapes.
                 </p>
               </div>
+              )}
               <div style={{ display: 'flex', gap: '10px', marginTop: '8px' }}>
-                <button className="btn-secondary" style={{ width: 'auto', padding: '6px 16px' }} onClick={resetCreate}>Cancel</button>
+                {!createFile && <button className="btn-secondary" style={{ width: 'auto', padding: '6px 16px' }} onClick={resetCreate}>Cancel</button>}
               </div>
             </div>
           )}
@@ -1655,7 +1738,28 @@ export default function SchemaManager() {
           {/* BUILDER WORKSPACE STEP 2: REDESIGNED MAPPING EXPERIENCE */}
           {createStep === "map" && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              
+
+              {/* Upload Success Summary Banner */}
+              {createFile && (
+                <div className="panel" style={{ padding: '12px 16px', display: 'flex', alignItems: 'center', gap: '12px', borderLeft: '3px solid var(--accent-success)', background: 'linear-gradient(90deg, rgba(16,185,129,0.04), transparent)' }}>
+                  <div style={{ width: '28px', height: '28px', borderRadius: '99px', background: 'rgba(16,185,129,0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.8rem', color: 'var(--accent-success)', fontWeight: 700, flexShrink: 0 }}>✓</div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 600, fontSize: '0.82rem', color: 'var(--text-primary)' }}>{createFile.name}</div>
+                    <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '1px' }}>
+                      {createSheets.length} sheet(s) · {createSheets.reduce((sum, s) => sum + (s.columns?.length || 0), 0)} columns · auto-mapped to {targetSheetOptions.length} destination sheet(s)
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
+                    <button className="btn-sm" style={{ fontSize: '0.7rem', padding: '3px 10px' }} onClick={() => setShowQuickLook(true)} title="Preview consolidated data structure">
+                      👁 Quick Look
+                    </button>
+                    <button className="btn-sm" style={{ fontSize: '0.7rem', padding: '3px 10px' }} onClick={() => replaceRef.current?.click()}>
+                      🔄 Replace
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {/* Excel Re-upload panel */}
               <div className="panel replace-dropzone"
                 onDragOver={e => e.preventDefault()}
@@ -1682,29 +1786,40 @@ export default function SchemaManager() {
               </div>
 
               {/* Main Definitions Form Block */}
-              <div className="panel" style={{ padding: '12px 16px', marginBottom: 0 }}>
-                <h3 className="modal-section-header" style={{ fontSize: '0.8rem', marginBottom: '8px', borderBottom: '1px solid rgba(255,255,255,0.03)', paddingBottom: '6px' }}>
-                  <span className="step-badge">1</span> Template Naming
-                </h3>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.2fr 1.8fr', gap: '12px' }}>
+              <div className="panel" style={{ padding: '16px 18px', marginBottom: 0 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', borderBottom: '1px solid rgba(255,255,255,0.03)', paddingBottom: '8px' }}>
+                  <h3 className="modal-section-header" style={{ fontSize: '0.8rem', margin: 0 }}>
+                    <span className="step-badge">1</span> Template Naming
+                  </h3>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
+                    <input type="checkbox" checked={createActive}
+                      onChange={e => setCreateActive(e.target.checked)}
+                      style={{ width: '14px', height: '14px', cursor: 'pointer' }} />
+                    Active
+                  </label>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1.2fr', gap: '14px' }}>
                   <div className="form-group">
-                    <label style={{ fontSize: '0.72rem', fontWeight: 600 }}>Template ID *</label>
+                    <label style={{ fontSize: '0.72rem', fontWeight: 600, display: 'block', marginBottom: '4px', color: 'var(--text-secondary)' }}>Template ID <span style={{ color: 'var(--accent-error)' }}>*</span></label>
                     <input className="create-input" value={createName}
                       disabled={!!editingId}
                       onChange={e => setCreateName(e.target.value.replace(/\s+/g, '_').toLowerCase())}
-                      placeholder="e.g. standard_financial" style={{ padding: '6px 10px', fontSize: '0.78rem' }} />
+                      placeholder="e.g. standard_financial" style={{ padding: '7px 10px', fontSize: '0.78rem', width: '100%', boxSizing: 'border-box' }} />
+                    {!editingId && <span style={{ fontSize: '0.62rem', color: 'var(--text-muted)', display: 'block', marginTop: '3px' }}>Unique identifier, auto-filled from filename</span>}
                   </div>
                   <div className="form-group">
-                    <label style={{ fontSize: '0.72rem', fontWeight: 600 }}>Client Label</label>
+                    <label style={{ fontSize: '0.72rem', fontWeight: 600, display: 'block', marginBottom: '4px', color: 'var(--text-secondary)' }}>Client Label</label>
                     <input className="create-input" value={createDisplay}
                       onChange={e => setCreateDisplay(e.target.value)}
-                      placeholder="e.g. Standard Financial Client" style={{ padding: '6px 10px', fontSize: '0.78rem' }} />
+                      placeholder="e.g. Standard Financial Client" style={{ padding: '7px 10px', fontSize: '0.78rem', width: '100%', boxSizing: 'border-box' }} />
+                    <span style={{ fontSize: '0.62rem', color: 'var(--text-muted)', display: 'block', marginTop: '3px' }}>Human-readable name for display in lists</span>
                   </div>
                   <div className="form-group">
-                    <label style={{ fontSize: '0.72rem', fontWeight: 600 }}>Filename Pattern</label>
+                    <label style={{ fontSize: '0.72rem', fontWeight: 600, display: 'block', marginBottom: '4px', color: 'var(--text-secondary)' }}>Filename Pattern</label>
                     <input className="create-input" value={createPattern}
                       onChange={e => setCreatePattern(e.target.value)}
-                      placeholder={`*${createName || 'client'}*`} style={{ padding: '6px 10px', fontSize: '0.78rem' }} />
+                      placeholder={`*${createName || 'client'}*`} style={{ padding: '7px 10px', fontSize: '0.78rem', width: '100%', boxSizing: 'border-box' }} />
+                    <span style={{ fontSize: '0.62rem', color: 'var(--text-muted)', display: 'block', marginTop: '3px' }}>Glob pattern to match incoming files (e.g. <code style={{ fontSize: '0.6rem' }}>*client*</code>)</span>
                   </div>
                 </div>
               </div>
@@ -1732,6 +1847,12 @@ export default function SchemaManager() {
                         {magicFeedback}
                       </span>
                     )}
+                    <button className="btn-sm btn-sm-copy"
+                      onClick={() => setShowQuickLook(true)}
+                      style={{ fontSize: '0.72rem', padding: '4px 10px', display: 'flex', alignItems: 'center', gap: '6px', width: 'auto' }}
+                      title="Preview consolidated data to help with mapping">
+                      <span>👁 Quick Look</span>
+                    </button>
                     <button className="btn-sm btn-sm-copy"
                       onClick={async () => {
                         const savedKey = localStorage.getItem("gemini_api_key");
@@ -2015,7 +2136,7 @@ export default function SchemaManager() {
 
           {/* ========= MAPPING DIALOG (Slide-Over Panel) ========= */}
           {dialogColumn && dialogTemp && (
-            <div className="mapping-dialog-overlay" onClick={(e) => { if (e.target === e.currentTarget) { setDialogColumn(null); setDialogTemp(null); } }}>
+            <div className="mapping-dialog-overlay" onClick={(e) => { if (e.target === e.currentTarget) { setDialogColumn(null); setDialogTemp(null); setVirtualSearch(''); } }}>
               <div className="mapping-dialog-panel">
                 
                 {/* Dialog Header */}
@@ -2024,8 +2145,15 @@ export default function SchemaManager() {
                     <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.8px', fontWeight: 700 }}>Configure Target Column</div>
                     <code style={{ fontSize: '1rem', fontWeight: 700, color: '#fff', marginTop: '2px', display: 'block' }}>{dialogColumn}</code>
                   </div>
-                  <button className="overlay-close" onClick={() => { setDialogColumn(null); setDialogTemp(null); }}
-                    style={{ width: '28px', height: '28px', fontSize: '0.9rem' }}>✕</button>
+                  <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                    <button className="btn-sm" onClick={() => setShowQuickLook(true)}
+                      style={{ fontSize: '0.7rem', padding: '4px 10px', display: 'flex', alignItems: 'center', gap: '4px' }}
+                      title="Uploaded file data">
+                      <span>👁</span> Quick Look
+                    </button>
+                    <button className="overlay-close" onClick={() => { setDialogColumn(null); setDialogTemp(null); setVirtualSearch(''); }}
+                      style={{ width: '28px', height: '28px', fontSize: '0.9rem' }}>✕</button>
+                  </div>
                 </div>
 
                 {/* Dialog Body */}
@@ -2060,40 +2188,75 @@ export default function SchemaManager() {
                     
                     {/* Direct Column */}
                     {dialogTemp.mapping_type === 'direct' && (
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                          <div style={{ flex: 1 }}>
-                            <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', display: 'block', marginBottom: '2px' }}>Source Sheet</span>
-                            <select value={dialogTemp.source_sheet_idx || 0}
-                              onChange={e => setDialogTemp(prev => ({ ...prev, source_sheet_idx: parseInt(e.target.value), source_column: '' }))}
-                              style={{ padding: '5px 8px', background: 'rgba(0,0,0,0.3)', border: '1px solid var(--border-color)', borderRadius: '5px', color: '#fff', fontSize: '0.75rem', width: '100%', fontFamily: 'inherit' }}>
-                              {createSheets.map((sh, si) => (
-                                <option key={si} value={si}>{sh.name} ({[...new Set(sh.columns)].length} cols)</option>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                        {/* Source Sheet selector */}
+                        <div>
+                          <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', display: 'block', marginBottom: '3px' }}>Source Sheet</span>
+                          <select value={dialogTemp.source_sheet_idx || 0}
+                            onChange={e => { setDialogTemp(prev => ({ ...prev, source_sheet_idx: parseInt(e.target.value), source_column: '' })); setVirtualSearch(''); }}
+                            style={{ padding: '5px 8px', background: 'rgba(0,0,0,0.3)', border: '1px solid var(--border-color)', borderRadius: '5px', color: '#fff', fontSize: '0.75rem', width: '100%', fontFamily: 'inherit' }}>
+                            {createSheets.map((sh, si) => (
+                              <option key={si} value={si}>{sh.name} ({[...new Set(sh.columns)].length} cols)</option>
+                            ))}
+                          </select>
+                        </div>
+
+                        {/* Source Column search + select */}
+                        <div>
+                          <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', display: 'block', marginBottom: '3px' }}>Source Column</span>
+                          <input value={virtualSearch}
+                            onChange={e => setVirtualSearch(e.target.value)}
+                            placeholder="Search columns..."
+                            style={{ padding: '5px 8px', fontSize: '0.75rem', background: 'rgba(0,0,0,0.3)', border: '1px solid var(--border-color)', borderRadius: '5px', color: '#fff', width: '100%', fontFamily: 'inherit', marginBottom: '4px', boxSizing: 'border-box' }} />
+                          <div style={{ maxHeight: '150px', overflowY: 'auto', border: '1px solid var(--border-color)', borderRadius: '5px', background: 'rgba(0,0,0,0.15)' }}>
+                            {[...new Set(createSheets[dialogTemp.source_sheet_idx || 0]?.columns || [])]
+                              .filter(c => !virtualSearch || c.toLowerCase().includes(virtualSearch.toLowerCase()))
+                              .map(c => (
+                                <div key={c}
+                                  onClick={() => setDialogTemp(prev => ({ ...prev, source_column: c }))}
+                                  style={{
+                                    padding: '5px 10px', fontSize: '0.75rem', cursor: 'pointer',
+                                    background: dialogTemp.source_column === c ? 'rgba(99,102,241,0.12)' : 'transparent',
+                                    color: dialogTemp.source_column === c ? '#fff' : 'var(--text-secondary)',
+                                    borderBottom: '1px solid rgba(255,255,255,0.03)',
+                                    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                                  }}
+                                  onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.03)'}
+                                  onMouseLeave={e => { if (dialogTemp.source_column !== c) e.currentTarget.style.background = 'transparent'; }}
+                                >
+                                  <span>{c}</span>
+                                  {dialogTemp.source_column === c && <span style={{ color: 'var(--accent-indigo)', fontSize: '0.65rem' }}>✓</span>}
+                                </div>
                               ))}
-                            </select>
-                          </div>
-                          <div style={{ flex: 1.5 }}>
-                            <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', display: 'block', marginBottom: '2px' }}>Source Column</span>
-                            <select value={dialogTemp.source_column || ''}
-                              onChange={e => setDialogTemp(prev => ({ ...prev, source_column: e.target.value }))}
-                              style={{ padding: '5px 8px', background: 'rgba(0,0,0,0.3)', border: dialogTemp.source_column ? '1px solid rgba(16,185,129,0.4)' : '1px solid var(--border-color)', borderRadius: '5px', color: dialogTemp.source_column ? '#fff' : 'var(--text-muted)', fontSize: '0.75rem', width: '100%', fontFamily: 'inherit' }}>
-                              <option value="">(none — not mapped)</option>
-                              {[...new Set(createSheets[dialogTemp.source_sheet_idx || 0]?.columns || [])].map(c => (
-                                <option key={c} value={c}>{c}</option>
-                              ))}
-                            </select>
+                            {virtualSearch && [...new Set(createSheets[dialogTemp.source_sheet_idx || 0]?.columns || [])].filter(c => c.toLowerCase().includes(virtualSearch.toLowerCase())).length === 0 && (
+                              <div style={{ padding: '12px', textAlign: 'center', fontSize: '0.72rem', color: 'var(--text-muted)' }}>No columns match "{virtualSearch}"</div>
+                            )}
                           </div>
                         </div>
-                        {/* Sample preview */}
+
+                        {/* Data Preview */}
                         {dialogTemp.source_column && (
-                          <div>
-                            <span style={{ fontSize: '0.62rem', color: 'var(--text-muted)', display: 'block', marginBottom: '3px' }}>Preview Data</span>
-                            <div className="dialog-preview-grid">
-                              {(createPreviews[dialogTemp.source_sheet_idx || 0]?.[dialogTemp.source_column] || []).slice(0, 12).map((v, vi) => (
-                                <span key={vi} className="dialog-preview-chip">
-                                  {v !== null && v !== undefined && String(v).trim() !== '' ? String(v).slice(0, 24) : '—'}
-                                </span>
-                              ))}
+                          <div className="dialog-section">
+                            <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>📋 Sample Data</span>
+                            <div style={{ border: '1px solid var(--border-color)', borderRadius: '6px', overflow: 'hidden' }}>
+                              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.72rem' }}>
+                                <thead>
+                                  <tr style={{ background: 'rgba(255,255,255,0.02)' }}>
+                                    <th style={{ padding: '4px 8px', textAlign: 'left', borderBottom: '1px solid var(--border-color)', fontWeight: 600, color: 'var(--text-muted)', minWidth: '100px' }}>Row</th>
+                                    <th style={{ padding: '4px 8px', textAlign: 'left', borderBottom: '1px solid var(--border-color)', fontWeight: 600, color: 'var(--accent-cyan)' }}>{dialogTemp.source_column}</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {(createPreviews[dialogTemp.source_sheet_idx || 0]?.[dialogTemp.source_column] || []).slice(0, 8).map((v, vi) => (
+                                    <tr key={vi} style={{ borderBottom: '1px solid rgba(255,255,255,0.02)' }}>
+                                      <td style={{ padding: '3px 8px', color: 'var(--text-muted)' }}>{vi + 1}</td>
+                                      <td style={{ padding: '3px 8px', color: 'var(--text-primary)', maxWidth: '300px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                        {v !== null && v !== undefined && String(v).trim() !== '' ? String(v) : <span style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}>—</span>}
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
                             </div>
                           </div>
                         )}
@@ -2209,11 +2372,94 @@ export default function SchemaManager() {
                 {/* Dialog Footer */}
                 <div className="mapping-dialog-footer">
                   <button className="btn-secondary" style={{ width: 'auto', padding: '6px 16px', fontSize: '0.78rem' }}
-                    onClick={() => { setDialogColumn(null); setDialogTemp(null); }}>Cancel</button>
+                    onClick={() => { setDialogColumn(null); setDialogTemp(null); setVirtualSearch(''); }}>Cancel</button>
                   <button className="btn-primary" style={{ width: 'auto', padding: '6px 16px', fontSize: '0.78rem' }}
                     onClick={saveMappingDialog}>Apply Mapping</button>
                 </div>
 
+              </div>
+            </div>
+          )}
+
+          {/* Quick Look Modal — preview uploaded spreadsheet data */}
+          {showQuickLook && (
+            <div className="overlay-backdrop" onClick={() => setShowQuickLook(false)} style={{
+              position: 'fixed', inset: 0, zIndex: 9999,
+              background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(6px)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center'
+            }}>
+              <div className="panel" onClick={e => e.stopPropagation()} style={{
+                width: '90vw', maxWidth: '900px', maxHeight: '80vh',
+                display: 'flex', flexDirection: 'column', padding: '20px',
+                animation: 'fadeSlideDown 0.2s ease'
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                  <h3 style={{ margin: 0, fontSize: '1rem' }}>👁 Quick Look — Uploaded File Data</h3>
+                  <button className="overlay-close" onClick={() => setShowQuickLook(false)}
+                    style={{ width: '30px', height: '30px', fontSize: '1rem' }}>✕</button>
+                </div>
+
+                {/* Sheet tabs */}
+                {createSheets.length > 1 && (
+                  <div style={{ display: 'flex', gap: '6px', marginBottom: '10px', flexWrap: 'wrap' }}>
+                    {createSheets.map((sh, si) => (
+                      <button key={si}
+                        onClick={() => setActiveSheetTab(si)}
+                        style={{
+                          padding: '4px 12px', fontSize: '0.72rem', borderRadius: '6px',
+                          border: '1px solid', cursor: 'pointer',
+                          background: activeSheetTab === si ? 'rgba(99,102,241,0.15)' : 'transparent',
+                          borderColor: activeSheetTab === si ? 'var(--accent-indigo)' : 'var(--border-color)',
+                          color: activeSheetTab === si ? '#fff' : 'var(--text-secondary)',
+                          fontWeight: activeSheetTab === si ? 600 : 400,
+                        }}
+                      >
+                        {sh.name || `Sheet ${si+1}`} ({sh.columns?.length || 0} cols)
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                <div style={{ flex: 1, overflowX: 'auto', overflowY: 'auto', fontSize: '0.78rem' }}>
+                  {quickLookData ? (
+                    <>
+                      {quickLookData.sourceSheetName && (
+                        <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '6px' }}>
+                          Showing sheet: <strong>{quickLookData.sourceSheetName}</strong> · {quickLookData.headers?.length || 0} columns · {quickLookData.rows?.length || 0} sample rows
+                        </div>
+                      )}
+                      <table className="schema-table" style={{ tableLayout: 'auto', width: 'auto', minWidth: '100%' }}>
+                        <thead>
+                          <tr>
+                            {quickLookData.headers?.map((h, i) => (
+                              <th key={i} style={{ padding: '6px 10px', whiteSpace: 'nowrap', fontSize: '0.72rem', minWidth: '120px' }}>{h}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {quickLookData.rows?.length > 0 ? quickLookData.rows.slice(0, 50).map((row, ri) => (
+                            <tr key={ri}>
+                              {quickLookData.headers.map((h, ci) => (
+                                <td key={ci} style={{ padding: '4px 10px', minWidth: '120px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                  {row[h] !== null && row[h] !== undefined ? String(row[h]) : ''}
+                                </td>
+                              ))}
+                            </tr>
+                          )) : (
+                            <tr><td colSpan={quickLookData.headers?.length || 1} style={{ padding: '40px', textAlign: 'center', color: 'var(--text-muted)' }}>No data rows available</td></tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </>
+                  ) : (
+                    <div style={{ padding: '60px', textAlign: 'center', color: 'var(--text-muted)' }}>No preview data available</div>
+                  )}
+                </div>
+                {quickLookData?.rows?.length > 50 && (
+                  <div style={{ textAlign: 'center', fontSize: '0.72rem', color: 'var(--text-muted)', paddingTop: '8px', borderTop: '1px solid var(--border-color)', marginTop: '8px' }}>
+                    Showing first 50 of {quickLookData.rows.length} rows
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -2223,7 +2469,7 @@ export default function SchemaManager() {
             <div className="panel" style={{ textAlign: 'center', padding: '40px 24px', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', minHeight: '200px' }}>
               <div style={{ fontSize: '2rem', width: '48px', height: '48px', borderRadius: '99px', background: 'rgba(16,185,129,0.1)', color: 'var(--accent-success)', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '12px' }}>✓</div>
               <h3 style={{ fontSize: '1.1rem', fontWeight: 700 }}>Template saved successfully!</h3>
-              <p style={{ color: 'var(--text-muted)', fontSize: '0.82rem', marginTop: '2px' }}>Reloading client definitions and updating dashboard...</p>
+              <p style={{ color: 'var(--text-muted)', fontSize: '0.82rem', marginTop: '2px' }}>Returning to explorer...</p>
             </div>
           )}
 

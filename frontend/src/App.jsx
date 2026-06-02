@@ -1,4 +1,5 @@
 import React, { useState, useEffect, lazy, Suspense } from 'react';
+import { ToastProvider } from './ToastContext';
 
 const ConsolidateView = lazy(() => import('./ConsolidateView'));
 const SchemaManager = lazy(() => import('./SchemaManager'));
@@ -27,6 +28,7 @@ export default function App() {
   };
 
   return (
+    <ToastProvider>
     <div className="app-shell">
       <nav className="app-nav">
         <div className="nav-brand">
@@ -57,5 +59,6 @@ export default function App() {
         </div>
       </main>
     </div>
+    </ToastProvider>
   );
 }
