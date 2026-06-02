@@ -7,7 +7,7 @@ missing column assertions, and schema drift checks.
 from typing import List, Dict, Any, Tuple
 from pydantic import BaseModel, Field
 from src.models.domain_models import SchemaDefinition, ColumnDefinition
-from src.models.exceptions import MappingException, MissingColumnException, SchemaDriftException
+from src.models.exceptions import MappingException, SchemaDriftException
 from src.mappers.synonym_engine import SynonymResolutionEngine, ResolutionMatch
 from src.mappers.validation_frame import clean_and_normalize_type, validate_regex_pattern
 
@@ -45,7 +45,6 @@ def map_sheet_records(raw_records: List[Dict[str, Any]],
         
     Raises:
         MappingException: On low confidence maps or invalid configurations.
-        MissingColumnException: If a mandatory canonical column is missing.
         SchemaDriftException: If strict drift detection is enabled and new columns are found.
     """
     if sheet_name not in schema_def.sheets:
@@ -119,10 +118,10 @@ def map_sheet_records(raw_records: List[Dict[str, Any]],
             missing_mandatory.append(col_def.canonical_name)
             
     if missing_mandatory:
-        raise MissingColumnException(
-            f"Mandatory target columns are missing in source sheet '{sheet_name}': {missing_mandatory}"
-        )
-
+        # Non-fatal: warn and continue with defaults instead of crashing the pipeline.
+        # The LLM tends to mark everything as mandatory — that would break processing
+        # for columns that have no source match but aren't truly critical.
+        print(f"  ⚠ Mandatory columns with no source match: {missing_mandatory} — will use defaults")
         
     # 6. Map and Normalize Raw Data Rows
     mapped_records: List[Dict[str, Any]] = []

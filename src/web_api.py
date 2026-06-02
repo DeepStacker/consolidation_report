@@ -13,7 +13,7 @@ import contextvars
 from io import StringIO
 from typing import List, Dict, Any
 from datetime import datetime, date
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import FileResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
@@ -101,9 +101,17 @@ class LogCapture:
         return self.stream.getvalue()
 
 @app.post("/api/consolidate")
-async def consolidate(files: List[UploadFile] = File(...)):
+async def consolidate(files: List[UploadFile] = File(...), manual_mappings: str = Form("{}")):
     if not files:
         raise HTTPException(status_code=400, detail="No files uploaded")
+
+    # Parse manual file → schema assignments (JSON string from form field)
+    try:
+        manual_map = json.loads(manual_mappings)
+    except (json.JSONDecodeError, TypeError):
+        manual_map = {}
+    if not isinstance(manual_map, dict):
+        manual_map = {}
 
     # Create a temporary workspace directory
     tmp_dir = tempfile.mkdtemp(prefix="web_consolidation_")
@@ -133,9 +141,11 @@ async def consolidate(files: List[UploadFile] = File(...)):
             for f in uploaded_files_log:
                 print(f"  ✓ {f}")
             print("✓ Running consolidation pipeline...\n")
+            if manual_map:
+                print(f"  Manual mappings: {manual_map}")
             
             try:
-                execute_e2e_consolidation(tmp_dir, output_path)
+                execute_e2e_consolidation(tmp_dir, output_path, manual_mappings=manual_map)
                 success = True
                 error_msg = None
             except Exception as e:
@@ -173,7 +183,6 @@ async def consolidate(files: List[UploadFile] = File(...)):
         audit_data = {}
         for f in os.listdir(tmp_dir):
             if f.startswith("run_audit_log") and f.endswith(".json"):
-                import json
                 with open(os.path.join(tmp_dir, f), "r") as log_file:
                     audit_data = json.load(log_file)
                 break
@@ -821,11 +830,57 @@ def _compute_filename_similarity(filename: str, schema: dict) -> float:
     return best_score
 
 
+def _compute_column_similarity(file_headers: list, schema: dict) -> float:
+    """Score how well file column headers match a schema's canonical names (0.0–1.0)."""
+    schema_canonicals = set()
+    for sdef in schema.get("sheets", {}).values():
+        for col in sdef.get("columns", []):
+            cname = col.get("canonical_name", "")
+            if cname:
+                schema_canonicals.add(cname.lower())
+
+    if not schema_canonicals or not file_headers:
+        return 0.0
+
+    fh = [h.lower().strip() for h in file_headers if h]
+
+    # Count file headers that match a schema canonical
+    fh_matches = 0
+    for h in fh:
+        if h in schema_canonicals:
+            fh_matches += 1
+            continue
+        norm_h = re.sub(r'[^a-z0-9]', '', h)
+        for sc in schema_canonicals:
+            if re.sub(r'[^a-z0-9]', '', sc) == norm_h:
+                fh_matches += 1
+                break
+
+    # Count schema canonicals matched by file headers
+    sc_matches = 0
+    for sc in schema_canonicals:
+        norm_sc = re.sub(r'[^a-z0-9]', '', sc)
+        for h in fh:
+            if re.sub(r'[^a-z0-9]', '', h) == norm_sc:
+                sc_matches += 1
+                break
+
+    file_coverage = fh_matches / max(len(fh), 1)
+    schema_coverage = sc_matches / max(len(schema_canonicals), 1)
+    return (file_coverage * 0.6 + schema_coverage * 0.4)
+
+
 @app.post("/api/preview-matching")
 async def preview_matching(data: dict):
-    """Check which active schemas match the given filenames (dry-run matching)."""
+    """Check which active schemas match the given filenames (dry-run matching).
+    
+    Accepts an optional ``file_headers`` dict: ``{filename: [sheet_header_list, ...]}``
+    for column-header-based matching when filename matching fails.
+    """
     filenames = data.get("filenames", [])
+    file_headers = data.get("file_headers", {})  # {filename: [headers from first sheet]}
     results = {}
+    all_schemas = []
     if os.path.isdir(SCHEMAS_DIR):
         for f in os.listdir(SCHEMAS_DIR):
             if not f.endswith((".yaml", ".yml")):
@@ -841,28 +896,45 @@ async def preview_matching(data: dict):
                 sheet_count = len(sheet_names)
             except Exception:
                 continue
+
+            all_schemas.append({
+                "client_id": cid,
+                "client_display_name": display,
+                "filename_pattern": pattern,
+                "sheet_names": sheet_names,
+                "sheet_count": sheet_count,
+            })
+
             for fn in filenames:
                 name_lower = fn.lower()
-                # Same logic as pipeline's find_client_file
                 if not name_lower.endswith((".xlsx", ".xls")):
                     continue
                 match = False
                 match_score = 0.0
-                
+
                 # Tier 1: Exact or pattern substring match
                 if pattern:
                     pat_lower = pattern.replace("*", "").lower()
                     if pat_lower in name_lower:
                         match = True
                         match_score = 1.0
-                
+
                 # Tier 2: Fuzzy match
                 if not match:
                     sim = _compute_filename_similarity(fn, schema)
-                    if sim >= 0.5:  # threshold for fuzzy matching
+                    if sim >= 0.5:
                         match = True
                         match_score = sim
-                
+
+                # Tier 3: Column-header match (if headers provided)
+                if not match and fn in file_headers:
+                    headers = file_headers[fn]
+                    if isinstance(headers, list) and headers:
+                        col_sim = _compute_column_similarity(headers, schema)
+                        if col_sim >= 0.4:
+                            match = True
+                            match_score = round(col_sim, 2)
+
                 if match:
                     results.setdefault(fn, []).append({
                         "client_id": cid,
@@ -872,10 +944,17 @@ async def preview_matching(data: dict):
                         "sheet_count": sheet_count,
                         "match_score": match_score,
                     })
-    # Sort matches: best match first (highest match score, then most sheets)
+
+    # Sort matches per file: highest score first, then most sheets
     for fn in results:
         results[fn].sort(key=lambda s: (-s["match_score"], -s["sheet_count"]))
-    return {"matches": results}
+    # Only keep the BEST match per file (highest score); the rest appear in
+    # ``all_schemas`` for manual selection.  This prevents one file from being
+    # auto-matched to multiple schemas when columns are similar.
+    for fn in list(results.keys()):
+        results[fn] = results[fn][:1]
+
+    return {"matches": results, "all_schemas": all_schemas}
 
 
 
@@ -1460,19 +1539,65 @@ Return ONLY valid JSON with this exact structure (no markdown, no explanation):
             text_out = "\n".join(lines).strip()
 
         mapping_result = json.loads(text_out)
-        
+
+        # Sanitize LLM mandatory: only keep mandatory=true for a whitelist of
+        # columns that actually have a source mapping.  The LLM tends to mark
+        # everything as required — that breaks the pipeline when columns can't
+        # be matched or source data has nulls.
+        _CRITICAL_MANDATORY = {"s.no", "sr no", "client"}
+
+        _DT_MAP = {"int": "integer", "float": "decimal", "bool": "string", "boolean": "string", "number": "decimal"}
+        def _sanitize_rules(rules: dict, mappings: dict) -> dict:
+            out = {}
+            for col, rule in rules.items():
+                if not isinstance(rule, dict):
+                    rule = {}
+                has_src = bool(mappings.get(col, "").strip())
+                is_critical = col.lower().strip() in _CRITICAL_MANDATORY
+                raw_dt = rule.get("datatype", "string")
+                out[col] = {
+                    "datatype": _DT_MAP.get(raw_dt.lower().strip(), raw_dt),
+                    "mandatory": has_src and is_critical,
+                    "default_value": rule.get("default_value", ""),
+                    "copy_from_column": rule.get("copy_from_column", ""),
+                }
+            return out
+
         if len(all_target_sheets) == 1:
+            raw_mappings = mapping_result.get("mappings", {})
+            if not isinstance(raw_mappings, dict):
+                raw_mappings = {}
+            raw_rules = mapping_result.get("rules", {})
+            if not isinstance(raw_rules, dict):
+                raw_rules = {}
             return {
                 "success": True,
-                "mappings": mapping_result.get("mappings", {}),
-                "rules": mapping_result.get("rules", {}),
+                "mappings": raw_mappings,
+                "rules": _sanitize_rules(raw_rules, raw_mappings),
                 "target_headers": target_configs[all_target_sheets[0]]["headers"],
                 "matched_sheet": all_target_sheets[0]
             }
         else:
+            raw_sheets = mapping_result.get("sheets", {})
+            if not isinstance(raw_sheets, dict):
+                raw_sheets = {}
+            out_sheets = {}
+            for sname, sdata in raw_sheets.items():
+                if not isinstance(sdata, dict):
+                    continue
+                smap = sdata.get("mappings", {})
+                if not isinstance(smap, dict):
+                    smap = {}
+                srule = sdata.get("rules", {})
+                if not isinstance(srule, dict):
+                    srule = {}
+                out_sheets[sname] = {
+                    "mappings": smap,
+                    "rules": _sanitize_rules(srule, smap),
+                }
             return {
                 "success": True,
-                "sheets": mapping_result.get("sheets", {}),
+                "sheets": out_sheets,
                 "target_sheets": all_target_sheets
             }
     except Exception as e:
@@ -1502,14 +1627,17 @@ async def create_schema_from_mapping(data: dict):
             cname = col.get("canonical_name", "").strip()
             if not cname:
                 continue
-            entry = {"canonical_name": cname, "datatype": col.get("datatype", "string")}
+            raw_dt = col.get("datatype", "string")
+            dt_map = {"int": "integer", "float": "decimal", "bool": "string", "boolean": "string", "number": "decimal"}
+            entry = {"canonical_name": cname, "datatype": dt_map.get(str(raw_dt).lower().strip(), raw_dt) if isinstance(raw_dt, str) else "string"}
             syns = [s.strip() for s in col.get("synonyms", []) if s.strip()]
             if syns:
                 entry["synonyms"] = syns
-            if col.get("mandatory"):
+            # Only allow mandatory=true for critical columns that have synonyms (source mapping)
+            if col.get("mandatory") and syns and cname.lower().strip() in {"s.no", "sr no", "client"}:
                 entry["mandatory"] = True
             dv = col.get("default_value")
-            if dv is not None and dv != "":
+            if dv is not None and dv != "" and str(dv).lower().strip() not in ("none", "null", "nan", "nil", "na"):
                 try:
                     entry["default_value"] = int(dv) if "." not in str(dv) else float(dv)
                 except (ValueError, TypeError):

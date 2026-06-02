@@ -1057,7 +1057,10 @@ export default function SchemaManager() {
           }
         }
         
-        if (m.mandatory) entry.mandatory = true;
+        // Only allow mandatory for critical columns with a source column match
+        if (m.mandatory && entry.synonyms && entry.synonyms.length > 0 && /^(s\.no|sr no|client)$/i.test(cname)) {
+          entry.mandatory = true;
+        }
         // Restore preserved regex, exceptions, and header_name
         if (m.validation_regex) entry.validation_regex = m.validation_regex;
         if (m.validation_exceptions && m.validation_exceptions.length > 0) entry.validation_exceptions = m.validation_exceptions;

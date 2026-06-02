@@ -9,6 +9,8 @@ const API_BASE = (window.location.origin === "http://localhost:5173" || window.l
 export default function ConsolidateView() {
   const [selectedFiles, setSelectedFiles] = useState([]);
   const [matchResults, setMatchResults] = useState(null);
+  const [allSchemas, setAllSchemas] = useState([]);
+  const [manualMappings, setManualMappings] = useState({});
   const [running, setRunning] = useState(false);
   const [logs, setLogs] = useState([]);
   const [success, setSuccess] = useState(false);
@@ -48,17 +50,40 @@ export default function ConsolidateView() {
 
   const runPreview = useCallback(async (files) => {
     const names = files.map(f => f.name);
-    if (!names.length) { setMatchResults(null); return; }
+    if (!names.length) { setMatchResults(null); setAllSchemas([]); return; }
     try {
+      // Read column headers from each file for column-header based matching
+      const fileHeaders = {};
+      for (const file of files) {
+        try {
+          const fd = new FormData();
+          fd.append("file", file);
+          const resp = await fetch(`${API_BASE}/api/analyze-excel`, { method: "POST", body: fd });
+          if (resp.ok) {
+            const data = await resp.json();
+            const sheets = data.sheets || [];
+            if (sheets.length > 0) {
+              fileHeaders[file.name] = sheets[0].columns || [];
+            }
+          }
+        } catch (e) { /* skip if header read fails */ }
+      }
       const r = await fetch(`${API_BASE}/api/preview-matching`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ filenames: names }),
+        body: JSON.stringify({ filenames: names, file_headers: fileHeaders }),
       });
-      if (r.ok) setMatchResults(await r.json());
-      else setMatchResults({ matches: {} });
+      if (r.ok) {
+        const data = await r.json();
+        setMatchResults(data);
+        setAllSchemas(data.all_schemas || []);
+      } else {
+        setMatchResults({ matches: {} });
+        setAllSchemas([]);
+      }
     } catch (e) {
       setMatchResults({ matches: {} });
+      setAllSchemas([]);
     }
   }, []);
 
@@ -97,10 +122,17 @@ export default function ConsolidateView() {
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
-  const removeFile = (index) => setSelectedFiles(prev => prev.filter((_, i) => i !== index));
+  const removeFile = (index) => {
+    const removed = selectedFiles[index];
+    setSelectedFiles(prev => prev.filter((_, i) => i !== index));
+    if (removed && manualMappings[removed.name]) {
+      setManualMappings(prev => { const n = {...prev}; delete n[removed.name]; return n; });
+    }
+  };
 
   const clearAll = () => {
-    setSelectedFiles([]); setMatchResults(null); setSuccess(false);
+    setSelectedFiles([]); setMatchResults(null); setAllSchemas([]);
+    setManualMappings({}); setSuccess(false);
     setFileId(null); setAuditLog(null); setAuditSummary(null); setLogs([]); setLogOpen(false);
   };
 
@@ -130,10 +162,12 @@ export default function ConsolidateView() {
   };
 
   const getFileMatch = (name) => matchResults?.matches?.[name] || [];
+  const hasManualMapping = (name) => !!manualMappings[name];
   const matchedCount = matchResults ? selectedFiles.filter(f => getFileMatch(f.name).length > 0).length : 0;
   const unmatchedCount = matchResults ? selectedFiles.filter(f => !getFileMatch(f.name).length).length : 0;
+  const mappedUnmatched = matchResults ? selectedFiles.filter(f => !getFileMatch(f.name).length && hasManualMapping(f.name)).length : 0;
   const totalSize = selectedFiles.reduce((sum, f) => sum + (f.size || 0), 0);
-  const canRun = selectedFiles.length > 0 && !running && unmatchedCount < selectedFiles.length;
+  const canRun = selectedFiles.length > 0 && !running && (matchedCount > 0 || mappedUnmatched > 0);
 
   const runConsolidation = async () => {
     if (!canRun) return;
@@ -143,6 +177,10 @@ export default function ConsolidateView() {
 
     const formData = new FormData();
     selectedFiles.forEach(file => formData.append("files", file));
+    // Include any manual template selections
+    if (Object.keys(manualMappings).length > 0) {
+      formData.append("manual_mappings", JSON.stringify(manualMappings));
+    }
 
     try {
       const response = await fetch(`${API_BASE}/api/consolidate`, { method: "POST", body: formData });
@@ -239,22 +277,53 @@ export default function ConsolidateView() {
             {selectedFiles.map((file, idx) => {
               const match = getFileMatch(file.name);
               const matched = match.length > 0;
+              const manual = manualMappings[file.name];
               return (
-                <div key={idx} className={`consolidate-file-item ${matched ? 'matched' : 'unmatched'}`}>
-                  <span className="consolidate-file-icon">{matched ? '📊' : '⚠️'}</span>
+                <div key={idx} className={`consolidate-file-item ${matched || manual ? 'matched' : 'unmatched'}`}>
+                  <span className="consolidate-file-icon">{matched || manual ? '📊' : '⚠️'}</span>
                   <span className="consolidate-file-name" title={file.name}>{file.name}</span>
                   {matched ? (
                     <span className="consolidate-file-match" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-                      {match[0].client_display_name && (
-                        <span style={{ background: 'rgba(16,185,129,0.08)', padding: '0 6px', borderRadius: '3px', fontSize: '0.7rem', color: 'var(--accent-success)', fontWeight: 500 }}>{match[0].client_display_name}</span>
-                      )}
+                      <span style={{ background: 'rgba(16,185,129,0.08)', padding: '0 6px', borderRadius: '3px', fontSize: '0.7rem', color: 'var(--accent-success)', fontWeight: 500 }}>{match[0].client_display_name}</span>
                       <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{file.size ? formatBytes(file.size) : ''}</span>
                     </span>
                   ) : (
                     <span className="consolidate-file-nomatch">
-                      no template matched
-                      {file.size ? <span style={{ fontSize: '0.7rem', marginLeft: '6px', color: 'var(--text-muted)' }}>{formatBytes(file.size)}</span> : null}
+                      {manual ? (
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                          <span style={{ background: 'rgba(245,158,11,0.10)', padding: '0 6px', borderRadius: '3px', fontSize: '0.7rem', color: 'var(--accent-warning)', fontWeight: 500 }}>
+                            {allSchemas.find(s => s.client_id === manual)?.client_display_name || manual}
+                          </span>
+                          <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{file.size ? formatBytes(file.size) : ''}</span>
+                        </span>
+                      ) : (
+                        <>
+                          no template matched
+                          {file.size ? <span style={{ fontSize: '0.7rem', marginLeft: '6px', color: 'var(--text-muted)' }}>{formatBytes(file.size)}</span> : null}
+                        </>
+                      )}
                     </span>
+                  )}
+                  {!matched && (
+                    <select className="template-select"
+                      value={manual || ''}
+                      onChange={e => {
+                        const val = e.target.value;
+                        setManualMappings(prev => {
+                          const next = { ...prev };
+                          if (val) next[file.name] = val;
+                          else delete next[file.name];
+                          return next;
+                        });
+                      }}
+                      onClick={e => e.stopPropagation()}
+                      style={{ fontSize: '0.7rem', maxWidth: 160, padding: '1px 4px', marginLeft: 6 }}
+                    >
+                      <option value="">— Select template —</option>
+                      {allSchemas.map(s => (
+                        <option key={s.client_id} value={s.client_id}>{s.client_display_name}</option>
+                      ))}
+                    </select>
                   )}
                   <button className="btn-remove" onClick={() => removeFile(idx)} aria-label={`Remove ${file.name}`}>✕</button>
                 </div>
@@ -264,7 +333,12 @@ export default function ConsolidateView() {
         )}
 
         {matchResults && unmatchedCount > 0 && (
-          <div className="consolidate-warn-bar">⚠ {unmatchedCount} file(s) did not match any template — these will be skipped</div>
+          <div className="consolidate-warn-bar">
+            ⚠ {unmatchedCount} file(s) did not match any template
+            {unmatchedCount - mappedUnmatched > 0
+              ? ` — ${unmatchedCount - mappedUnmatched} will be skipped without manual assignment`
+              : ' — use the dropdowns above to assign a template'}
+          </div>
         )}
 
         {selectedFiles.length > 0 && (

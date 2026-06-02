@@ -1,14 +1,19 @@
 import re
 from typing import List, Dict, Any, Tuple
-from src.models.exceptions import ValidationException
 from src.models.domain_models import SheetDefinition
 
 
-def check_mandatory_fields(row: Dict[str, Any], mandatory_fields: List[str], row_idx: int) -> None:
+def check_mandatory_fields(row: Dict[str, Any], mandatory_fields: List[str], row_idx: int) -> List[Dict[str, Any]]:
+    warnings = []
     for field in mandatory_fields:
         val = row.get(field, None)
         if val is None or (isinstance(val, str) and val.strip() == ""):
-            raise ValidationException(f"Mandatory Field '{field}' is missing or empty at Row {row_idx}")
+            warnings.append({
+                "field": field,
+                "row_idx": row_idx,
+                "message": f"Mandatory field '{field}' is missing or empty at Row {row_idx}"
+            })
+    return warnings
 
 
 def run_regex_matches(row: Dict[str, Any], regex_rules: Dict[str, Dict], row_idx: int) -> List[Dict[str, Any]]:
@@ -57,7 +62,8 @@ def validate_sheet(records: List[Dict[str, Any]], sheet_def: SheetDefinition,
             }
 
     for idx, row in enumerate(records, 2):
-        check_mandatory_fields(row, mandatory_fields, idx)
+        mandatory_warnings = check_mandatory_fields(row, mandatory_fields, idx)
+        warnings.extend(mandatory_warnings)
         row_warnings = run_regex_matches(row, regex_rules, idx)
         warnings.extend(row_warnings)
         clean_records.append(row)

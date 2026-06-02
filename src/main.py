@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import glob
 import shutil
@@ -82,17 +83,82 @@ def _compute_filename_similarity(filename: str, schema: SchemaDefinition) -> flo
     return best_score
 
 
-def find_client_file(workspace_path: str, schema: SchemaDefinition) -> str:
+def _quick_column_similarity(filepath: str, schema: SchemaDefinition) -> float:
+    """Read the first sheet's headers from *filepath* and score against *schema*'s canonicals."""
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(filepath, data_only=True, read_only=True)
+        headers = []
+        if wb.sheetnames:
+            ws = wb[wb.sheetnames[0]]
+            for cell in next(ws.iter_rows(max_row=1, values_only=True), []):
+                if cell is not None:
+                    h = str(cell).lower().strip()
+                    if h:
+                        headers.append(h)
+        wb.close()
+    except Exception:
+        return 0.0
+    if not headers:
+        return 0.0
+
+    schema_canonicals = set()
+    for sdef in schema.sheets.values():
+        for col in sdef.columns:
+            if col.canonical_name:
+                schema_canonicals.add(col.canonical_name.lower())
+
+    if not schema_canonicals:
+        return 0.0
+
+    fh_matches = 0
+    for h in headers:
+        if h in schema_canonicals:
+            fh_matches += 1
+            continue
+        norm_h = re.sub(r'[^a-z0-9]', '', h)
+        for sc in schema_canonicals:
+            if re.sub(r'[^a-z0-9]', '', sc) == norm_h:
+                fh_matches += 1
+                break
+
+    sc_matches = 0
+    for sc in schema_canonicals:
+        norm_sc = re.sub(r'[^a-z0-9]', '', sc)
+        for h in headers:
+            if re.sub(r'[^a-z0-9]', '', h) == norm_sc:
+                sc_matches += 1
+                break
+
+    file_coverage = fh_matches / max(len(headers), 1)
+    schema_coverage = sc_matches / max(len(schema_canonicals), 1)
+    return file_coverage * 0.6 + schema_coverage * 0.4
+
+
+def find_client_file(workspace_path: str, schema: SchemaDefinition, claimed_files: set | None = None) -> str:
+    """Find a workbook file matching *schema*.
+    
+    ``claimed_files`` — set of basenames already assigned to other schemas.
+    Files in this set will be skipped to prevent one file being processed by
+    multiple schemas.
+    """
+    if claimed_files is None:
+        claimed_files = set()
+
+    def _unclaimed(fp: str) -> bool:
+        return os.path.basename(fp) not in claimed_files
+
     # Tier 1: Try glob pattern first (exact discovery)
     pattern = os.path.join(workspace_path, schema.filename_pattern)
-    matches = glob.glob(pattern)
+    matches = [fp for fp in glob.glob(pattern) if _unclaimed(fp)]
     if not matches:
         # Tier 2: Case-insensitive substring matching
         all_files = os.listdir(workspace_path)
         pattern_lower = schema.filename_pattern.replace("*", "").lower()
         matches = [
             os.path.join(workspace_path, f) for f in all_files
-            if f.endswith((".xlsx", ".xls")) and pattern_lower in f.lower()
+            if _unclaimed(os.path.join(workspace_path, f))
+            and f.endswith((".xlsx", ".xls")) and pattern_lower in f.lower()
         ]
     
     if not matches:
@@ -100,14 +166,14 @@ def find_client_file(workspace_path: str, schema: SchemaDefinition) -> str:
         all_files = os.listdir(workspace_path)
         candidates = []
         for f in all_files:
-            if not f.endswith((".xlsx", ".xls")) or f == "Consolidated_Report.xlsx":
+            fp = os.path.join(workspace_path, f)
+            if not _unclaimed(fp) or not f.endswith((".xlsx", ".xls")) or f == "Consolidated_Report.xlsx":
                 continue
             
             sim = _compute_filename_similarity(f, schema)
             if sim >= 0.5:
-                candidates.append((sim, os.path.join(workspace_path, f)))
+                candidates.append((sim, fp))
         
-        # Sort candidates by similarity score descending
         candidates.sort(key=lambda x: -x[0])
         matches = [c[1] for c in candidates]
         
@@ -131,7 +197,8 @@ def find_client_file(workspace_path: str, schema: SchemaDefinition) -> str:
                         continue
                         
         for f in all_files:
-            if not f.endswith((".xlsx", ".xls")) or f == "Consolidated_Report.xlsx":
+            fp = os.path.join(workspace_path, f)
+            if not _unclaimed(fp) or not f.endswith((".xlsx", ".xls")) or f == "Consolidated_Report.xlsx":
                 continue
             
             # Compute similarity
@@ -148,9 +215,8 @@ def find_client_file(workspace_path: str, schema: SchemaDefinition) -> str:
                     break
             
             if better_match_exists:
-                continue # Skip this file, it belongs to another schema
+                continue
                 
-            fp = os.path.join(workspace_path, f)
             try:
                 import openpyxl
                 wb = openpyxl.load_workbook(fp, read_only=True)
@@ -164,7 +230,68 @@ def find_client_file(workspace_path: str, schema: SchemaDefinition) -> str:
         if structural_matches:
             matches = structural_matches
 
+    if not matches:
+        # Tier 5: Column-header matching — read file headers from first sheet and
+        # compare against schema canonical names
+        all_files = [f for f in os.listdir(workspace_path) if f.endswith((".xlsx", ".xls")) and f != "Consolidated_Report.xlsx"]
+        schema_canonicals = set()
+        for sdef in schema.sheets.values():
+            for col in sdef.columns:
+                if col.canonical_name:
+                    schema_canonicals.add(col.canonical_name.lower())
 
+        if schema_canonicals:
+            candidates = []
+            for f in all_files:
+                fp = os.path.join(workspace_path, f)
+                if not _unclaimed(fp):
+                    continue
+                try:
+                    import openpyxl
+                    wb = openpyxl.load_workbook(fp, data_only=True, read_only=True)
+                    headers = []
+                    if wb.sheetnames:
+                        ws = wb[wb.sheetnames[0]]
+                        for cell in next(ws.iter_rows(max_row=1, values_only=True), []):
+                            if cell is not None:
+                                h = str(cell).lower().strip()
+                                if h:
+                                    headers.append(h)
+                    wb.close()
+                except Exception:
+                    continue
+                if not headers:
+                    continue
+
+                fh_matches = 0
+                for h in headers:
+                    if h in schema_canonicals:
+                        fh_matches += 1
+                        continue
+                    norm_h = re.sub(r'[^a-z0-9]', '', h)
+                    for sc in schema_canonicals:
+                        if re.sub(r'[^a-z0-9]', '', sc) == norm_h:
+                            fh_matches += 1
+                            break
+
+                sc_matches = 0
+                for sc in schema_canonicals:
+                    norm_sc = re.sub(r'[^a-z0-9]', '', sc)
+                    for h in headers:
+                        if re.sub(r'[^a-z0-9]', '', h) == norm_sc:
+                            sc_matches += 1
+                            break
+
+                file_coverage = fh_matches / max(len(headers), 1)
+                schema_coverage = sc_matches / max(len(schema_canonicals), 1)
+                score = file_coverage * 0.6 + schema_coverage * 0.4
+
+                if score >= 0.4:
+                    candidates.append((score, fp))
+
+            candidates.sort(key=lambda x: -x[0])
+            if candidates:
+                matches = [c[1] for c in candidates]
 
     if not matches:
         raise FileNotFoundError(
@@ -183,7 +310,12 @@ def find_client_file(workspace_path: str, schema: SchemaDefinition) -> str:
 
 
 
-def execute_e2e_consolidation(workspace_path: str, output_path: str):
+def execute_e2e_consolidation(workspace_path: str, output_path: str, manual_mappings: dict | None = None):
+    """Run the full consolidation pipeline.
+    
+    ``manual_mappings`` — optional ``{filename: schema_client_id}`` dict that
+    overrides auto-detection and forces a specific file → schema binding.
+    """
     print("=" * 80)
     print("DYNAMIC CONSOLIDATION PIPELINE")
     print("=" * 80)
@@ -208,23 +340,76 @@ def execute_e2e_consolidation(workspace_path: str, output_path: str):
         for path, schema in discovered:
             print(f"    - {schema.client_id} ({schema.client_display_name})")
 
-        # 2. Process each client: find file, ingest, map, apply rules
+        # Build reverse lookup: filename → schema_client_id for manual mappings
+        manual_by_schema: dict[str, str] = {}
+        if manual_mappings:
+            for fn, cid in manual_mappings.items():
+                manual_by_schema[cid] = fn
+
+        # 2. Pre‑match: for each schema, compute its best column‑header similarity
+        # against unclaimed files.  This ensures schemas are tried in order of
+        # genuine content similarity, not alphabetical order.
+        print("\n[Step 2] Pre‑computing file‑schema match scores...")
+        schema_match_scores: list[tuple[float, str, SchemaDefinition]] = []
+        for schema_path, schema in discovered:
+            if schema.client_id in manual_by_schema:
+                # Manually assigned schemas always go first (score = 999)
+                schema_match_scores.append((999.0, schema.client_id, schema))
+                continue
+            try:
+                # Quick score: try filename tiers 1-3 first (no I/O)
+                all_fnames = [f for f in os.listdir(workspace_path) if f.endswith((".xlsx", ".xls")) and f != "Consolidated_Report.xlsx"]
+                best = 0.0
+                pattern = schema.filename_pattern.replace("*", "").lower() if schema.filename_pattern else ""
+                for fname in all_fnames:
+                    fn_base = fname.lower()
+                    # Tier 1/2: pattern substring
+                    if pattern and pattern in fn_base:
+                        best = max(best, 1.0)
+                    # Tier 3: fuzzy token
+                    sim = _compute_filename_similarity(fname, schema)
+                    best = max(best, sim)
+                    # Tier 5: column‑header (read file only if needed)
+                    if best < 0.4:
+                        col_score = _quick_column_similarity(os.path.join(workspace_path, fname), schema)
+                        best = max(best, col_score)
+                schema_match_scores.append((best, schema.client_id, schema))
+            except Exception:
+                schema_match_scores.append((0.0, schema.client_id, schema))
+        # Highest score first → best‑matching schemas claim their files earliest
+        schema_match_scores.sort(key=lambda x: (-x[0], x[1]))
+
+        # 3. Process each client: find file, ingest, map, apply rules
         print("\n[Step 2] Processing client workbooks...")
+        claimed_files: set[str] = set()  # basenames already assigned to a schema
         client_data: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
         all_schemas = []
         processed_any = False
 
-        for schema_path, schema in discovered:
+        for score, cid, schema in schema_match_scores:
             all_schemas.append(schema)
             print(f"\n  Processing: {schema.client_id}...")
 
-            try:
-                filepath = find_client_file(workspace_path, schema)
-            except FileNotFoundError:
-                print(f"    ⚠ No matching file found — skipping {schema.client_display_name}")
-                logger.log_rule("SKIP", f"No source file for {schema.client_id}, skipped.")
-                continue
+            filepath = None
+            if schema.client_id in manual_by_schema:
+                preferred = manual_by_schema[schema.client_id]
+                fp = os.path.join(workspace_path, preferred)
+                if os.path.isfile(fp):
+                    filepath = fp
+                    print(f"    Using manually assigned file: {preferred}")
+                    logger.log_rule("MANUAL", f"User-assigned file {preferred} -> {schema.client_id}")
+                else:
+                    print(f"    ⚠ Manually assigned file '{preferred}' not found — trying auto-detect")
 
+            if filepath is None:
+                try:
+                    filepath = find_client_file(workspace_path, schema, claimed_files=claimed_files)
+                except FileNotFoundError:
+                    print(f"    ⚠ No matching file found — skipping {schema.client_display_name}")
+                    logger.log_rule("SKIP", f"No source file for {schema.client_id}, skipped.")
+                    continue
+
+            claimed_files.add(os.path.basename(filepath))
             processed_any = True
             logger.log_file(schema.client_id, filepath)
             print(f"    Source: {os.path.basename(filepath)}")

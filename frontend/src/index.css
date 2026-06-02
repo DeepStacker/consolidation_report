@@ -373,6 +373,21 @@ header p {
   font-size: 0.78rem; 
 }
 
+.template-select {
+  background: rgba(245, 158, 11, 0.04);
+  border: 1px solid rgba(245, 158, 11, 0.25);
+  border-radius: 3px;
+  color: inherit;
+  cursor: pointer;
+  font-size: 0.72rem;
+  max-width: 180px;
+  padding: 2px 6px;
+}
+.template-select:focus {
+  border-color: var(--accent-primary);
+  outline: none;
+}
+
 .consolidate-warn-bar {
   font-size: 0.85rem; 
   color: var(--accent-warning);
