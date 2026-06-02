@@ -11,32 +11,8 @@ WORKDIR /app/frontend
 COPY frontend/package*.json ./
 RUN npm install
 
-# Copy frontend source
+# Copy frontend source and build static assets
 COPY frontend/ ./
-
-# Download self-hosted Google Fonts (not stored in git — HF rejects binary files)
-RUN mkdir -p public/fonts && node -e "
-const https = require('https');
-const fs = require('fs');
-const url = 'https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@300;400;500;600&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap';
-https.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' } }, res => {
-  let css = '';
-  res.on('data', c => css += c);
-  res.on('end', () => {
-    const re = /url\(([^)]+)\)/g;
-    let m, done = 0;
-    while ((m = re.exec(css)) !== null) {
-      const fontUrl = m[1];
-      const fname = fontUrl.split('/').pop().split('?')[0];
-      https.get(fontUrl, r => r.pipe(fs.createWriteStream('public/fonts/' + fname)).on('finish', () => {
-        if (++done >= 15) console.log('Fonts downloaded');
-      }));
-    }
-  });
-});
-"
-
-# Build static assets
 RUN npm run build
 
 # --- Stage 2: Build FastAPI Python Server ---
@@ -58,6 +34,20 @@ COPY config/ ./config/
 
 # Copy compiled static frontend assets from Stage 1
 COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
+
+# Download self-hosted Google Fonts (not stored in git — HF rejects binary files)
+RUN mkdir -p frontend/dist/fonts && python3 -c "
+import urllib.request, re
+url = 'https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@300;400;500;600&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap'
+req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+css = urllib.request.urlopen(req, timeout=30).read().decode('utf-8')
+for match in re.finditer(r'url\(([^)]+)\)', css):
+    font_url = match.group(1)
+    fname = font_url.split('/')[-1].split('?')[0]
+    urllib.request.urlretrieve(font_url, f'frontend/dist/fonts/{fname}')
+    print(f'Downloaded {fname}')
+print('Font download complete')
+"
 
 # Expose default Hugging Face Spaces port (7860)
 EXPOSE 7860
